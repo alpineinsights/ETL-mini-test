@@ -6,6 +6,7 @@ from llama_parse import LlamaParse
 from qdrant_client import QdrantClient
 from llama_index.embeddings.voyageai import VoyageEmbedding
 import tempfile
+import shutil
 from datetime import datetime
 import requests
 import xml.etree.ElementTree as ET
@@ -54,6 +55,10 @@ if 'processing_metrics' not in st.session_state:
         'errors': []
     }
 
+# Create a persistent temp directory
+TEMP_DIR = Path("./.temp")
+TEMP_DIR.mkdir(exist_ok=True)
+
 # Client initialization
 with st.expander("Client Initialization", expanded=True):
     try:
@@ -61,7 +66,15 @@ with st.expander("Client Initialization", expanded=True):
             api_key=st.secrets['ANTHROPIC_API_KEY'],
             default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
         )
-        llama_parser = LlamaParse(api_key=st.secrets['LLAMA_PARSE_API_KEY'])
+        # Initialize LlamaParse with additional options
+        llama_parser = LlamaParse(
+            api_key=st.secrets['LLAMA_PARSE_API_KEY'],
+            result_type="markdown",
+            verbose=True,
+            retry=True,
+            num_retries=3,
+            timeout=120
+        )
         embed_model = VoyageEmbedding(
             model_name="voyage-finance-2",
             voyage_api_key=st.secrets['VOYAGE_API_KEY']
@@ -139,22 +152,46 @@ def get_chunk_context(client, chunk: str, full_doc: str, system_prompt: str, mod
 
 def process_document(url: str, metrics: dict, model: str, context_prompt: str) -> bool:
     try:
-        st.write(f"Downloading {unquote(url.split('/')[-1])}...")
+        filename = unquote(url.split('/')[-1])
+        st.write(f"Downloading {filename}...")
+        
         pdf_response = requests.get(url, timeout=30)
         pdf_response.raise_for_status()
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-            tmp_file.write(pdf_response.content)
-            tmp_path = tmp_file.name
-            
+        # Save to persistent temp directory with unique name
+        temp_path = TEMP_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+        
+        with open(temp_path, 'wb') as f:
+            f.write(pdf_response.content)
+        
         try:
             st.write("Parsing document...")
-            parsed_docs = llama_parser.load_data(tmp_path)
+            st.write(f"PDF file size: {os.path.getsize(temp_path)} bytes")
+            
+            # Try parsing with debug info
+            try:
+                parsed_docs = llama_parser.load_data(
+                    file_path=str(temp_path),
+                    metadata=True,
+                    verbose=True
+                )
+                st.write(f"Raw parser response type: {type(parsed_docs)}")
+                st.write(f"Raw parser response: {parsed_docs}")
+                
+            except Exception as parse_error:
+                st.error(f"Parser error details: {type(parse_error).__name__}: {str(parse_error)}")
+                raise
+            
+            if not parsed_docs:
+                st.warning(f"No sections found in document: {filename}")
+                return False
+                
             st.write(f"Found {len(parsed_docs)} sections")
             
             for doc in parsed_docs:
                 # Get full document text for context
                 full_doc_text = doc.text
+                st.write(f"Full document length: {len(full_doc_text)} characters")
                 
                 chunks = []
                 current_chunk = []
@@ -211,14 +248,15 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
             return True
             
         finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
                 
     except Exception as e:
         metrics['errors'].append(f"Document processing error for {url}: {str(e)}")
         st.error(f"Error processing document: {str(e)}")
         return False
 
+# Main UI section
 st.title("PDF Processing Pipeline")
 st.subheader("Process PDFs from Sitemap")
 
@@ -335,6 +373,14 @@ with st.expander("Current Processing State", expanded=False):
     if st.session_state.processed_urls:
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
+
+# Cleanup temp directory on exit
+for file in TEMP_DIR.glob("*"):
+    try:
+        os.remove(file)
+    except:
+        pass
+
 
 
 
