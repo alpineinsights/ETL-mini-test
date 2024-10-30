@@ -3,3 +3,5 @@ anthropic==0.8.1
 voyageai==0.2.4
 llama-parse==0.5.12
 qdrant-client==1.7.0
+llama-index-core>=0.10.0
+llama-index-embeddings-voyageai>=0.2.1
