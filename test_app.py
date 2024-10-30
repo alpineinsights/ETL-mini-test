@@ -47,7 +47,10 @@ if 'processing_metrics' not in st.session_state:
 
 with st.expander("Client Initialization", expanded=True):
     try:
-        client = anthropic.Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
+        client = anthropic.Client(
+            api_key=st.secrets['ANTHROPIC_API_KEY'],
+            default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+        )
         llama_parser = LlamaParse(api_key=st.secrets['LLAMA_PARSE_API_KEY'])
         embed_model = VoyageEmbedding(
             model_name="voyage-finance-2",
@@ -112,27 +115,19 @@ def process_document(url: str, metrics: dict) -> bool:
                 for i, chunk in enumerate(chunks):
                     try:
                         st.write(f"Processing chunk {i+1}/{len(chunks)}...")
-                        context = client.beta.prompt_caching.messages.create(
+                        context = client.messages.create(
                             model="claude-3-haiku-20240307",
                             max_tokens=200,
-                            system=[
-                                {
-                                    "type": "text",
-                                    "text": "You are tasked with analyzing document chunks to extract key information. Focus on identifying dates, financial periods, and main topics.\n"
-                                },
-                                {
-                                    "type": "text",
-                                    "text": chunk,
-                                    "cache_control": {"type": "ephemeral"}
-                                }
-                            ],
+                            system="You are tasked with analyzing document chunks to extract key information. Focus on identifying dates, financial periods, and main topics.",
                             messages=[
                                 {
                                     "role": "user",
-                                    "content": "Please provide a concise summary of this document chunk."
+                                    "content": [
+                                        {"type": "text", "text": "<document_chunk>", "cache_control": {"type": "ephemeral"}},
+                                        {"type": "text", "text": chunk}
+                                    ]
                                 }
-                            ],
-                            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+                            ]
                         )
                         
                         embedding = embed_model.get_text_embedding(chunk)
@@ -276,4 +271,5 @@ with st.expander("Current Processing State", expanded=False):
     if st.session_state.processed_urls:
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
+
 
