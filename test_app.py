@@ -13,10 +13,19 @@ from urllib.parse import unquote
 import json
 from pathlib import Path
 import os
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
 
 STATE_FILE = "./.processed_urls.json"
+
+# Default context prompt
+DEFAULT_PROMPT = """Please analyze this document chunk and provide a brief contextual summary that includes:
+1. The apparent date of the document
+2. Any fiscal period mentioned
+3. The main topic or purpose of this content
+
+Provide only the contextual summary, nothing else."""
 
 def load_processed_urls():
     try:
@@ -45,6 +54,7 @@ if 'processing_metrics' not in st.session_state:
         'errors': []
     }
 
+# Client initialization
 with st.expander("Client Initialization", expanded=True):
     try:
         client = anthropic.Client(
@@ -61,12 +71,29 @@ with st.expander("Client Initialization", expanded=True):
         st.error(f"❌ Error initializing clients: {str(e)}")
         st.stop()
 
+# Configuration section
 with st.expander("Processing Configuration", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         chunk_size = st.number_input("Chunk Size", value=1000, min_value=100, max_value=4000)
         chunk_overlap = st.number_input("Chunk Overlap", value=200, min_value=0, max_value=1000)
+        model = st.selectbox(
+            "Claude Model",
+            options=[
+                "claude-3-haiku-20240307",
+                "claude-3-sonnet-20240229",
+                "claude-3-opus-20240229"
+            ],
+            index=0,
+            help="Select the Claude model to use for processing"
+        )
     with col2:
+        context_prompt = st.text_area(
+            "Context Prompt",
+            value=DEFAULT_PROMPT,
+            height=200,
+            help="Customize the prompt for context generation"
+        )
         force_reprocess = st.checkbox("Force Reprocess All")
         if st.button("Reset Processing State"):
             st.session_state.processed_urls = set()
@@ -74,7 +101,36 @@ with st.expander("Processing Configuration", expanded=True):
             st.success("Processing state reset")
             st.rerun()
 
-def process_document(url: str, metrics: dict) -> bool:
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=5, min=5, max=60),
+    retry=retry_if_exception(lambda e: "overloaded_error" in str(e))
+)
+def get_chunk_context(client, chunk: str, system_prompt: str, model: str):
+    """Get context with retry logic for overload errors"""
+    try:
+        context = client.messages.create(
+            model=model,
+            max_tokens=200,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<document_chunk>", "cache_control": {"type": "ephemeral"}},
+                        {"type": "text", "text": chunk}
+                    ]
+                }
+            ]
+        )
+        return context
+    except Exception as e:
+        if "overloaded_error" in str(e):
+            st.warning(f"Claude is overloaded, retrying in a few seconds...")
+            raise e
+        raise e
+
+def process_document(url: str, metrics: dict, model: str, context_prompt: str) -> bool:
     try:
         st.write(f"Downloading {unquote(url.split('/')[-1])}...")
         pdf_response = requests.get(url, timeout=30)
@@ -115,19 +171,11 @@ def process_document(url: str, metrics: dict) -> bool:
                 for i, chunk in enumerate(chunks):
                     try:
                         st.write(f"Processing chunk {i+1}/{len(chunks)}...")
-                        context = client.messages.create(
-                            model="claude-3-haiku-20240307",
-                            max_tokens=200,
-                            system="You are tasked with analyzing document chunks to extract key information. Focus on identifying dates, financial periods, and main topics.",
-                            messages=[
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": "<document_chunk>", "cache_control": {"type": "ephemeral"}},
-                                        {"type": "text", "text": chunk}
-                                    ]
-                                }
-                            ]
+                        context = get_chunk_context(
+                            client=client,
+                            chunk=chunk,
+                            system_prompt=context_prompt,
+                            model=model
                         )
                         
                         embedding = embed_model.get_text_embedding(chunk)
@@ -230,7 +278,12 @@ if st.button("Start Processing"):
         for i, url in enumerate(pdf_urls):
             status_text.text(f"Processing document {i+1}/{len(pdf_urls)}: {unquote(url.split('/')[-1])}")
             
-            success = process_document(url, st.session_state.processing_metrics)
+            success = process_document(
+                url=url,
+                metrics=st.session_state.processing_metrics,
+                model=model,
+                context_prompt=context_prompt
+            )
             if success:
                 st.session_state.processing_metrics['processed_documents'] += 1
                 st.session_state.processed_urls.add(url)
