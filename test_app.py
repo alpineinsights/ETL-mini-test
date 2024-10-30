@@ -178,21 +178,6 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                 full_doc_text = doc.text
                 st.write(f"Full document length: {len(full_doc_text)} characters")
                 
-            except Exception as parse_error:
-                st.error(f"Parser error details: {type(parse_error).__name__}: {str(parse_error)}")
-                raise
-            
-            if not parsed_docs:
-                st.warning(f"No sections found in document: {filename}")
-                return False
-                
-            st.write(f"Found {len(parsed_docs)} sections")
-            
-            for doc in parsed_docs:
-                # Get full document text for context
-                full_doc_text = doc.text
-                st.write(f"Full document length: {len(full_doc_text)} characters")
-                
                 chunks = []
                 current_chunk = []
                 current_length = 0
@@ -380,6 +365,7 @@ for file in TEMP_DIR.glob("*"):
         os.remove(file)
     except:
         pass
+
 
 
 
