@@ -66,14 +66,10 @@ with st.expander("Client Initialization", expanded=True):
             api_key=st.secrets['ANTHROPIC_API_KEY'],
             default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
         )
-        # Initialize LlamaParse with additional options
+        # Initialize LlamaParse with only supported parameters
         llama_parser = LlamaParse(
             api_key=st.secrets['LLAMA_PARSE_API_KEY'],
-            result_type="markdown",
-            verbose=True,
-            retry=True,
-            num_retries=3,
-            timeout=120
+            result_type="text"
         )
         embed_model = VoyageEmbedding(
             model_name="voyage-finance-2",
@@ -168,15 +164,19 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
             st.write("Parsing document...")
             st.write(f"PDF file size: {os.path.getsize(temp_path)} bytes")
             
-            # Try parsing with debug info
-            try:
-                parsed_docs = llama_parser.load_data(
-                    file_path=str(temp_path),
-                    metadata=True,
-                    verbose=True
-                )
-                st.write(f"Raw parser response type: {type(parsed_docs)}")
-                st.write(f"Raw parser response: {parsed_docs}")
+            # Try parsing with simplified call
+            parsed_docs = llama_parser.load_data(str(temp_path))
+            
+            if not parsed_docs:
+                st.warning(f"No sections found in document: {filename}")
+                return False
+                
+            st.write(f"Found {len(parsed_docs)} sections")
+            
+            for doc in parsed_docs:
+                # Get full document text for context
+                full_doc_text = doc.text
+                st.write(f"Full document length: {len(full_doc_text)} characters")
                 
             except Exception as parse_error:
                 st.error(f"Parser error details: {type(parse_error).__name__}: {str(parse_error)}")
