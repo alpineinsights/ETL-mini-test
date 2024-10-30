@@ -20,12 +20,12 @@ st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layou
 STATE_FILE = "./.processed_urls.json"
 
 # Default context prompt
-DEFAULT_PROMPT = """Please analyze this document chunk and provide a brief contextual summary that includes:
-1. The apparent date of the document
-2. Any fiscal period mentioned
-3. The main topic or purpose of this content
+DEFAULT_PROMPT = """Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Make sure to list:
+1. The name of the main company mentioned and any other secondary companies mentioned if applicable
+2. The apparent date of the document (YYYY.MM.DD)
+3. Any fiscal period mentioned (precise quarter, half year, FY...)
 
-Provide only the contextual summary, nothing else."""
+Answer only with the succinct context and nothing else."""
 
 def load_processed_urls():
     try:
@@ -106,7 +106,7 @@ with st.expander("Processing Configuration", expanded=True):
     wait=wait_exponential(multiplier=5, min=5, max=60),
     retry=retry_if_exception(lambda e: "overloaded_error" in str(e))
 )
-def get_chunk_context(client, chunk: str, system_prompt: str, model: str):
+def get_chunk_context(client, chunk: str, full_doc: str, system_prompt: str, model: str):
     """Get context with retry logic for overload errors"""
     try:
         context = client.messages.create(
@@ -115,10 +115,17 @@ def get_chunk_context(client, chunk: str, system_prompt: str, model: str):
             system=system_prompt,
             messages=[
                 {
-                    "role": "user",
+                    "role": "user", 
                     "content": [
-                        {"type": "text", "text": "<document_chunk>", "cache_control": {"type": "ephemeral"}},
-                        {"type": "text", "text": chunk}
+                        {
+                            "type": "text",
+                            "text": "<document>\n" + full_doc + "\n</document>",
+                            "cache_control": {"type": "ephemeral"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "\nHere is the chunk we want to situate within the whole document:\n<chunk>\n" + chunk + "\n</chunk>"
+                        }
                     ]
                 }
             ]
@@ -146,6 +153,9 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
             st.write(f"Found {len(parsed_docs)} sections")
             
             for doc in parsed_docs:
+                # Get full document text for context
+                full_doc_text = doc.text
+                
                 chunks = []
                 current_chunk = []
                 current_length = 0
@@ -174,6 +184,7 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                         context = get_chunk_context(
                             client=client,
                             chunk=chunk,
+                            full_doc=full_doc_text,
                             system_prompt=context_prompt,
                             model=model
                         )
@@ -324,5 +335,6 @@ with st.expander("Current Processing State", expanded=False):
     if st.session_state.processed_urls:
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
+
 
 
