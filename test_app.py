@@ -23,7 +23,7 @@ with st.expander("Client Initialization", expanded=True):
         client = anthropic.Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
         llama_parser = LlamaParse(api_key=st.secrets['LLAMA_PARSE_API_KEY'])
         embed_model = VoyageEmbedding(
-            model_name="voyage-2",
+            model_name="voyage-finance-2",  # Updated model name
             voyage_api_key=st.secrets['VOYAGE_API_KEY']
         )
         st.success("✅ All clients initialized successfully")
@@ -43,16 +43,44 @@ with st.expander("Sitemap Processing", expanded=True):
     if st.button("Process Sitemap"):
         try:
             # Fetch and parse sitemap
+            st.write("Fetching sitemap...")
             response = requests.get(sitemap_url, timeout=30)
             response.raise_for_status()
+            
+            # Debug raw response
+            st.write("Raw sitemap content:")
+            st.code(response.text)
+            
             root = ET.fromstring(response.content)
             
-            # Extract PDF URLs
-            urls = root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
-            pdf_urls = [url.text for url in urls if url.text.lower().endswith('.pdf')]
+            # Try different XML namespaces
+            namespaces = {
+                None: "",
+                "ns": "http://www.sitemaps.org/schemas/sitemap/0.9"
+            }
+            
+            pdf_urls = []
+            for ns in namespaces.values():
+                if ns:
+                    urls = root.findall(f".//{{{ns}}}loc")
+                else:
+                    urls = root.findall(".//loc")
+                
+                pdf_urls.extend([url.text for url in urls if url.text.lower().endswith('.pdf')])
+                
+                if pdf_urls:
+                    break
             
             if not pdf_urls:
-                st.warning("No PDF URLs found in sitemap")
+                st.error("No PDF URLs found in sitemap. URL paths found:")
+                # Show all URLs found for debugging
+                for ns in namespaces.values():
+                    if ns:
+                        urls = root.findall(f".//{{{ns}}}loc")
+                    else:
+                        urls = root.findall(".//loc")
+                    for url in urls:
+                        st.write(f"- {url.text}")
                 st.stop()
                 
             st.success(f"Found {len(pdf_urls)} PDF documents")
