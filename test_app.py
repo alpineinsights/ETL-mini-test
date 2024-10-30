@@ -12,11 +12,10 @@ import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 import json
 from pathlib import Path
+import os
 
-# Configure page
 st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
 
-# Initialize state management
 STATE_FILE = "./.processed_urls.json"
 
 def load_processed_urls():
@@ -46,7 +45,6 @@ if 'processing_metrics' not in st.session_state:
         'errors': []
     }
 
-# Initialize clients
 with st.expander("Client Initialization", expanded=True):
     try:
         client = anthropic.Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
@@ -60,7 +58,6 @@ with st.expander("Client Initialization", expanded=True):
         st.error(f"❌ Error initializing clients: {str(e)}")
         st.stop()
 
-# Configuration
 with st.expander("Processing Configuration", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -121,23 +118,18 @@ def process_document(url: str, metrics: dict) -> bool:
                             system=[
                                 {
                                     "type": "text",
-                                    "text": "You are tasked with analyzing document chunks. Provide a brief, focused contextual summary identifying key dates, financial periods, and main topics."
+                                    "text": "You are tasked with analyzing document chunks to extract key information. Focus on identifying dates, financial periods, and main topics.\n"
+                                },
+                                {
+                                    "type": "text",
+                                    "text": chunk,
+                                    "cache_control": {"type": "ephemeral"}
                                 }
                             ],
                             messages=[
                                 {
-                                    "role": "user", 
-                                    "content": [
-                                        {
-                                            "type": "text", 
-                                            "text": "<document_chunk>",
-                                            "cache_control": {"type": "ephemeral"}
-                                        },
-                                        {
-                                            "type": "text",
-                                            "text": chunk
-                                        }
-                                    ]
+                                    "role": "user",
+                                    "content": "Please provide a concise summary of this document chunk."
                                 }
                             ],
                             extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
@@ -151,7 +143,7 @@ def process_document(url: str, metrics: dict) -> bool:
                         with st.expander(f"Chunk {i+1} Results", expanded=False):
                             st.write("Context:", context.content[0].text)
                             st.write("Embedding size:", len(embedding))
-                        
+                            
                         if hasattr(context, 'usage') and hasattr(context.usage, 'cache_read_input_tokens'):
                             if context.usage.cache_read_input_tokens > 0:
                                 metrics['cache_hits'] += 1
@@ -173,7 +165,6 @@ def process_document(url: str, metrics: dict) -> bool:
         st.error(f"Error processing document: {str(e)}")
         return False
 
-# Main processing section
 st.title("PDF Processing Pipeline")
 st.subheader("Process PDFs from Sitemap")
 
@@ -280,9 +271,9 @@ if st.button("Start Processing"):
     except Exception as e:
         st.error(f"Error processing sitemap: {str(e)}")
 
-# Show current state
 with st.expander("Current Processing State", expanded=False):
     st.write(f"Previously processed URLs: {len(st.session_state.processed_urls)}")
     if st.session_state.processed_urls:
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
+
