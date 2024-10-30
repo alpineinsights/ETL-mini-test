@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 import json
 from pathlib import Path
-import hashlib
 
 # Configure page
 st.set_page_config(
@@ -82,10 +81,11 @@ with st.expander("Processing Configuration", expanded=True):
             st.success("Processing state reset successfully")
             st.rerun()
 
-async def process_document(url: str, metrics: dict) -> bool:
+def process_document(url: str, metrics: dict) -> bool:
     """Process a single document with metrics tracking"""
     try:
         # Download PDF
+        st.write(f"Downloading {unquote(url.split('/')[-1])}...")
         pdf_response = requests.get(url, timeout=30)
         pdf_response.raise_for_status()
         
@@ -95,7 +95,9 @@ async def process_document(url: str, metrics: dict) -> bool:
             
         try:
             # Parse document
+            st.write("Parsing document...")
             parsed_docs = llama_parser.load_data(tmp_path)
+            st.write(f"Found {len(parsed_docs)} sections")
             
             for doc in parsed_docs:
                 # Chunk document
@@ -118,10 +120,13 @@ async def process_document(url: str, metrics: dict) -> bool:
                     chunks.append('\n'.join(current_chunk))
                 
                 metrics['total_chunks'] += len(chunks)
+                st.write(f"Created {len(chunks)} chunks")
                 
                 # Process chunks
-                for chunk in chunks:
+                chunk_progress = st.progress(0)
+                for i, chunk in enumerate(chunks):
                     try:
+                        st.write(f"Processing chunk {i+1}/{len(chunks)}...")
                         # Generate context
                         context = client.beta.prompt_caching.messages.create(
                             model="claude-3-haiku-20240307",
@@ -155,10 +160,12 @@ async def process_document(url: str, metrics: dict) -> bool:
                         embedding = embed_model.get_text_embedding(chunk)
                         
                         metrics['successful_chunks'] += 1
+                        chunk_progress.progress((i + 1) / len(chunks))
                         
                     except Exception as e:
                         metrics['failed_chunks'] += 1
                         metrics['errors'].append(f"Chunk processing error in {url}: {str(e)}")
+                        st.error(f"Error processing chunk: {str(e)}")
                         continue
             
             return True
@@ -170,9 +177,11 @@ async def process_document(url: str, metrics: dict) -> bool:
                 
     except Exception as e:
         metrics['errors'].append(f"Document processing error for {url}: {str(e)}")
+        st.error(f"Error processing document: {str(e)}")
         return False
 
 # Main processing section
+st.title("PDF Processing Pipeline")
 st.subheader("Process PDFs from Sitemap")
 
 sitemap_url = st.text_input(
@@ -195,6 +204,7 @@ if st.button("Start Processing"):
         }
         
         # Fetch and parse sitemap
+        st.write("Fetching sitemap...")
         response = requests.get(sitemap_url, timeout=30)
         response.raise_for_status()
         
@@ -220,7 +230,10 @@ if st.button("Start Processing"):
         
         if not pdf_urls:
             st.error("No PDF URLs found in sitemap")
+            st.code(response.text, language="xml")  # Show raw XML for debugging
             st.stop()
+            
+        st.write(f"Found PDFs:", pdf_urls)
         
         # Filter out already processed URLs unless force_reprocess is True
         if not force_reprocess:
@@ -289,5 +302,5 @@ if st.button("Start Processing"):
 with st.expander("Current Processing State", expanded=False):
     st.write(f"Previously processed URLs: {len(st.session_state.processed_urls)}")
     if st.session_state.processed_urls:
-        for url in st.session_state.processed_urls:
+        for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
