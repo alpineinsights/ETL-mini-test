@@ -286,4 +286,3 @@ with st.expander("Current Processing State", expanded=False):
     if st.session_state.processed_urls:
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
-```
