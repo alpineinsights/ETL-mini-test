@@ -1674,4 +1674,36 @@ if st.button("Start Processing"):
                 st.metric("Cache Hits", st.session_state.processing_metrics['cache_hits'])
             with metrics_cols[3]:
                 elapsed = datetime.now() - st.session_state.processing_metrics['start_time']
-                st.
+                 st.metric("Processing Time", f"{elapsed.total_seconds():.1f}s")
+        
+        save_processed_urls(st.session_state.processed_urls)
+        
+        st.success(f"""
+            Processing complete!
+            - Documents processed: {st.session_state.processing_metrics['processed_documents']}/{st.session_state.processing_metrics['total_documents']}
+            - Successful chunks: {st.session_state.processing_metrics['successful_chunks']}
+            - Failed chunks: {st.session_state.processing_metrics['failed_chunks']}
+            - Cache hits: {st.session_state.processing_metrics['cache_hits']}
+            - Total time: {(datetime.now() - st.session_state.processing_metrics['start_time']).total_seconds():.1f}s
+        """)
+        
+        if st.session_state.processing_metrics['errors']:
+            with st.expander("Show Errors", expanded=False):
+                for error in st.session_state.processing_metrics['errors']:
+                    st.error(error)
+                    
+    except Exception as e:
+        st.error(f"Error processing sitemap: {str(e)}")
+
+with st.expander("Current Processing State", expanded=False):
+    st.write(f"Previously processed URLs: {len(st.session_state.processed_urls)}")
+    if st.session_state.processed_urls:
+        for url in sorted(st.session_state.processed_urls):
+            st.write(f"- {unquote(url.split('/')[-1])}")
+
+# Cleanup temp directory on exit
+for file in TEMP_DIR.glob("*"):
+    try:
+        os.remove(file)
+    except:
+        pass
