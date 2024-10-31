@@ -3,7 +3,14 @@ Configuration file for system prompts used in the application.
 Handles prompt templates and their configuration.
 """
 
-from typing import Optional
+import os
+import sys
+
+# Add the current directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
 from company_config import get_company_names_prompt
 
 # Default context prompt template
@@ -20,7 +27,7 @@ Answer only with the succinct context, and nothing else (no introduction, no con
 List of company names (use exact spelling) : 
 {company_names}"""
 
-def get_default_prompt() -> str:
+def get_default_prompt():
     """
     Returns the complete default prompt with company names.
     
@@ -34,7 +41,7 @@ def get_default_prompt() -> str:
     except Exception as e:
         raise Exception(f"Error generating default prompt: {str(e)}")
 
-def get_custom_prompt(template: str) -> str:
+def get_custom_prompt(template: str):
     """
     Returns a custom prompt with company names.
     
