@@ -1674,7 +1674,7 @@ if st.button("Start Processing"):
                 st.metric("Cache Hits", st.session_state.processing_metrics['cache_hits'])
             with metrics_cols[3]:
                 elapsed = datetime.now() - st.session_state.processing_metrics['start_time']
-                 st.metric("Processing Time", f"{elapsed.total_seconds():.1f}s")
+                st.metric("Processing Time", f"{elapsed.total_seconds():.1f}s")
         
         save_processed_urls(st.session_state.processed_urls)
         
