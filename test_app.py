@@ -76,7 +76,41 @@ List of company names (use exact spelling) :
         except Exception as e:
             raise Exception(f"Error generating default prompt: {str(e)}")
 
-# Token counting and chunking functions
+# Constants and initial setup
+STATE_FILE = "./.processed_urls.json"
+TEMP_DIR = Path("./.temp")
+TEMP_DIR.mkdir(exist_ok=True)
+
+# Initialize session state
+if 'processed_urls' not in st.session_state:
+    st.session_state.processed_urls = load_processed_urls()
+
+if 'processing_metrics' not in st.session_state:
+    st.session_state.processing_metrics = {
+        'total_documents': 0,
+        'processed_documents': 0,
+        'total_chunks': 0,
+        'successful_chunks': 0,
+        'failed_chunks': 0,
+        'cache_hits': 0,
+        'total_tokens': 0,
+        'start_time': None,
+        'errors': []
+    }
+    def load_processed_urls():
+    """Load previously processed URLs from state file"""
+    try:
+        with open(STATE_FILE) as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_processed_urls(urls):
+    """Save processed URLs to state file"""
+    Path(STATE_FILE).parent.mkdir(exist_ok=True)
+    with open(STATE_FILE, 'w') as f:
+        json.dump(list(urls), f)
+
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
     try:
@@ -188,41 +222,6 @@ def create_semantic_chunks(
         })
     
     return chunks
-    # Constants and initial setup
-STATE_FILE = "./.processed_urls.json"
-TEMP_DIR = Path("./.temp")
-TEMP_DIR.mkdir(exist_ok=True)
-
-def load_processed_urls():
-    """Load previously processed URLs from state file"""
-    try:
-        with open(STATE_FILE) as f:
-            return set(json.load(f))
-    except FileNotFoundError:
-        return set()
-
-def save_processed_urls(urls):
-    """Save processed URLs to state file"""
-    Path(STATE_FILE).parent.mkdir(exist_ok=True)
-    with open(STATE_FILE, 'w') as f:
-        json.dump(list(urls), f)
-
-# Initialize session state
-if 'processed_urls' not in st.session_state:
-    st.session_state.processed_urls = load_processed_urls()
-
-if 'processing_metrics' not in st.session_state:
-    st.session_state.processing_metrics = {
-        'total_documents': 0,
-        'processed_documents': 0,
-        'total_chunks': 0,
-        'successful_chunks': 0,
-        'failed_chunks': 0,
-        'cache_hits': 0,
-        'total_tokens': 0,
-        'start_time': None,
-        'errors': []
-    }
 
 @retry(
     stop=stop_after_attempt(3),
@@ -290,7 +289,6 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                 full_doc_text = doc.text
                 st.write(f"Full document length: {len(full_doc_text)} characters")
                 
-                # Create semantic chunks using our new function
                 chunks = create_semantic_chunks(
                     text=full_doc_text,
                     max_tokens=chunk_size,
@@ -346,10 +344,163 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
         metrics['errors'].append(f"Document processing error for {url}: {str(e)}")
         st.error(f"Error processing document: {str(e)}")
         return False
+# Page configuration
+st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
 
-# Page configuration and main UI code...
-[Previous UI code remains the same, but with these changes in the metrics display:]
+# Client initialization
+with st.expander("Client Initialization", expanded=True):
+    try:
+        client = anthropic.Client(
+            api_key=st.secrets['ANTHROPIC_API_KEY'],
+            default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+        )
+        llama_parser = LlamaParse(
+            api_key=st.secrets['LLAMA_PARSE_API_KEY'],
+            result_type="text"
+        )
+        embed_model = VoyageEmbedding(
+            model_name="voyage-finance-2",
+            voyage_api_key=st.secrets['VOYAGE_API_KEY']
+        )
+        st.success("✅ All clients initialized successfully")
+    except Exception as e:
+        st.error(f"❌ Error initializing clients: {str(e)}")
+        st.stop()
 
+# Configuration section
+with st.expander("Processing Configuration", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        chunk_size = st.number_input(
+            "Chunk Size (in tokens)", 
+            value=1000,
+            min_value=100,
+            max_value=4000,
+            help="Maximum number of tokens per chunk"
+        )
+        chunk_overlap = st.number_input(
+            "Chunk Overlap (in tokens)",
+            value=200,
+            min_value=0,
+            max_value=1000,
+            help="Number of tokens to overlap between chunks"
+        )
+        model = st.selectbox(
+            "Claude Model",
+            options=[
+                "claude-3-haiku-20240307",
+                "claude-3-sonnet-20240229",
+                "claude-3-opus-20240229"
+            ],
+            index=0,
+            help="Select the Claude model to use for processing"
+        )
+    with col2:
+        context_prompt = st.text_area(
+            "Context Prompt",
+            value=PromptConfig.get_default_prompt(),
+            height=200,
+            help="Customize the prompt for context generation"
+        )
+        force_reprocess = st.checkbox("Force Reprocess All")
+        if st.button("Reset Processing State"):
+            st.session_state.processed_urls = set()
+            save_processed_urls(st.session_state.processed_urls)
+            st.success("Processing state reset")
+            st.rerun()
+
+# Main UI section
+st.title("PDF Processing Pipeline")
+st.subheader("Process PDFs from Sitemap")
+
+sitemap_url = st.text_input(
+    "Enter Sitemap URL",
+    value="https://alpinedatalake7.s3.eu-west-3.amazonaws.com/sitemap.xml"
+)
+
+if st.button("Start Processing"):
+    try:
+        # Reset metrics for new processing run
+        st.session_state.processing_metrics = {
+            'total_documents': 0,
+            'processed_documents': 0,
+            'total_chunks': 0,
+            'successful_chunks': 0,
+            'failed_chunks': 0,
+            'cache_hits': 0,
+            'total_tokens': 0,
+            'start_time': datetime.now(),
+            'errors': []
+        }
+        
+        st.write("Fetching sitemap...")
+        response = requests.get(sitemap_url, timeout=30)
+        response.raise_for_status()
+        
+        root = ET.fromstring(response.content)
+        
+        namespaces = {
+            None: "",
+            "ns": "http://www.sitemaps.org/schemas/sitemap/0.9"
+        }
+        
+        pdf_urls = []
+        for ns in namespaces.values():
+            if ns:
+                urls = root.findall(f".//{{{ns}}}loc")
+            else:
+                urls = root.findall(".//loc")
+            
+            pdf_urls.extend([url.text for url in urls if url.text.lower().endswith('.pdf')])
+            if pdf_urls:
+                break
+        
+        if not pdf_urls:
+            st.error("No PDF URLs found in sitemap")
+            st.code(response.text, language="xml")
+            st.stop()
+            
+        st.write(f"Found {len(pdf_urls)} PDFs")
+        
+        # Display PDF list in an expander
+        with st.expander("Show PDF URLs"):
+            for url in pdf_urls:
+                st.write(f"- {unquote(url.split('/')[-1])}")
+        
+        if not force_reprocess:
+            new_urls = [url for url in pdf_urls if url not in st.session_state.processed_urls]
+            skipped = len(pdf_urls) - len(new_urls)
+            if skipped > 0:
+                st.info(f"Skipping {skipped} previously processed documents")
+            pdf_urls = new_urls
+        
+        if not pdf_urls:
+            st.success("No new documents to process!")
+            st.stop()
+        
+        st.session_state.processing_metrics['total_documents'] = len(pdf_urls)
+        
+        # Create columns for metrics display
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        metrics_cols = st.columns(5)
+        
+        for i, url in enumerate(pdf_urls):
+            status_text.text(f"Processing document {i+1}/{len(pdf_urls)}: {unquote(url.split('/')[-1])}")
+            
+            success = process_document(
+                url=url,
+                metrics=st.session_state.processing_metrics,
+                model=model,
+                context_prompt=context_prompt
+            )
+            
+            if success:
+                st.session_state.processing_metrics['processed_documents'] += 1
+                st.session_state.processed_urls.add(url)
+            
+            progress_bar.progress((i + 1) / len(pdf_urls))
+            
             # Update metrics display
             with metrics_cols[0]:
                 st.metric(
@@ -382,7 +533,9 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                     "Processing Time", 
                     f"{elapsed.total_seconds():.1f}s"
                 )
-
+        
+        save_processed_urls(st.session_state.processed_urls)
+        
         # Final success message with detailed metrics
         st.success(f"""
             Processing complete!
@@ -394,3 +547,36 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
             - Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}
             - Total processing time: {(datetime.now() - st.session_state.processing_metrics['start_time']).total_seconds():.1f}s
         """)
+        
+        # Display any errors in an expander
+        if st.session_state.processing_metrics['errors']:
+            with st.expander("Show Errors", expanded=False):
+                for error in st.session_state.processing_metrics['errors']:
+                    st.error(error)
+                    
+    except Exception as e:
+        st.error(f"Error processing sitemap: {str(e)}")
+
+# Show current processing state
+with st.expander("Current Processing State", expanded=False):
+    st.write(f"Previously processed URLs: {len(st.session_state.processed_urls)}")
+    if st.session_state.processed_urls:
+        for url in sorted(st.session_state.processed_urls):
+            st.write(f"- {unquote(url.split('/')[-1])}")
+            
+    # Add token statistics
+    if st.session_state.processing_metrics['successful_chunks'] > 0:
+        st.write("\nToken Statistics:")
+        avg_tokens = (
+            st.session_state.processing_metrics['total_tokens'] / 
+            st.session_state.processing_metrics['successful_chunks']
+        )
+        st.write(f"- Average tokens per chunk: {avg_tokens:.0f}")
+        st.write(f"- Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}")
+
+# Cleanup temp directory on exit
+for file in TEMP_DIR.glob("*"):
+    try:
+        os.remove(file)
+    except:
+        pass
