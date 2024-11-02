@@ -7,7 +7,6 @@ import streamlit as st
 import anthropic
 import voyageai
 from llama_parse import LlamaParse
-from qdrant_client import QdrantClient
 from llama_index.embeddings.voyageai import VoyageEmbedding
 import tempfile
 import shutil
@@ -81,6 +80,20 @@ STATE_FILE = "./.processed_urls.json"
 TEMP_DIR = Path("./.temp")
 TEMP_DIR.mkdir(exist_ok=True)
 
+def load_processed_urls():
+    """Load previously processed URLs from state file"""
+    try:
+        with open(STATE_FILE) as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_processed_urls(urls):
+    """Save processed URLs to state file"""
+    Path(STATE_FILE).parent.mkdir(exist_ok=True)
+    with open(STATE_FILE, 'w') as f:
+        json.dump(list(urls), f)
+
 # Initialize session state
 if 'processed_urls' not in st.session_state:
     st.session_state.processed_urls = load_processed_urls()
@@ -97,24 +110,36 @@ if 'processing_metrics' not in st.session_state:
         'start_time': None,
         'errors': []
     }
-    def load_processed_urls():
-    """Load previously processed URLs from state file"""
-    try:
-        with open(STATE_FILE) as f:
-            return set(json.load(f))
-    except FileNotFoundError:
-        return set()
 
-def save_processed_urls(urls):
-    """Save processed URLs to state file"""
-    Path(STATE_FILE).parent.mkdir(exist_ok=True)
-    with open(STATE_FILE, 'w') as f:
-        json.dump(list(urls), f)
-
+# Initialize clients
+try:
+    client = anthropic.Client(
+        api_key=st.secrets['ANTHROPIC_API_KEY'],
+        default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+    )
+    llama_parser = LlamaParse(
+        api_key=st.secrets['LLAMA_PARSE_API_KEY'],
+        result_type="text"
+    )
+    embed_model = VoyageEmbedding(
+        model_name="voyage-finance-2",
+        voyage_api_key=st.secrets['VOYAGE_API_KEY']
+    )
+    
+    # Store clients in session state
+    if 'clients' not in st.session_state:
+        st.session_state.clients = {
+            'anthropic': client,
+            'llama_parser': llama_parser,
+            'embed_model': embed_model
+        }
+except Exception as e:
+    st.error(f"Error initializing clients: {str(e)}")
+    st.stop()
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
     try:
-        token_count = client.count_tokens(text)
+        token_count = st.session_state.clients['anthropic'].count_tokens(text)
         return token_count.total_tokens
     except Exception as e:
         st.error(f"Error counting tokens: {str(e)}")
@@ -127,14 +152,6 @@ def create_semantic_chunks(
 ) -> List[Dict[str, Any]]:
     """
     Create semantically meaningful chunks from text while respecting markdown structure.
-    
-    Args:
-        text: The input text to chunk
-        max_tokens: Maximum tokens per chunk
-        overlap_tokens: Number of tokens to overlap between chunks
-    
-    Returns:
-        List of dictionaries containing chunk text and token count
     """
     # Split text into paragraphs using markdown line breaks
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
@@ -231,7 +248,7 @@ def create_semantic_chunks(
 def get_chunk_context(client, chunk: str, full_doc: str, system_prompt: str, model: str):
     """Get context with retry logic for overload errors"""
     try:
-        context = client.messages.create(
+        context = st.session_state.clients['anthropic'].messages.create(
             model=model,
             max_tokens=200,
             system=system_prompt,
@@ -277,7 +294,7 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
             st.write("Parsing document...")
             st.write(f"PDF file size: {os.path.getsize(temp_path)} bytes")
             
-            parsed_docs = llama_parser.load_data(str(temp_path))
+            parsed_docs = st.session_state.clients['llama_parser'].load_data(str(temp_path))
             
             if not parsed_docs:
                 st.warning(f"No sections found in document: {filename}")
@@ -306,14 +323,14 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                         
                         st.write(f"Processing chunk {i+1}/{len(chunks)}...")
                         context = get_chunk_context(
-                            client=client,
+                            client=st.session_state.clients['anthropic'],
                             chunk=chunk_text,
                             full_doc=full_doc_text,
                             system_prompt=context_prompt,
                             model=model
                         )
                         
-                        embedding = embed_model.get_text_embedding(chunk_text)
+                        embedding = st.session_state.clients['embed_model'].get_text_embedding(chunk_text)
                         
                         metrics['successful_chunks'] += 1
                         metrics['total_tokens'] += chunk_tokens
@@ -347,24 +364,12 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
 # Page configuration
 st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
 
-# Client initialization
+# Client verification in UI
 with st.expander("Client Initialization", expanded=True):
-    try:
-        client = anthropic.Client(
-            api_key=st.secrets['ANTHROPIC_API_KEY'],
-            default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
-        )
-        llama_parser = LlamaParse(
-            api_key=st.secrets['LLAMA_PARSE_API_KEY'],
-            result_type="text"
-        )
-        embed_model = VoyageEmbedding(
-            model_name="voyage-finance-2",
-            voyage_api_key=st.secrets['VOYAGE_API_KEY']
-        )
+    if 'clients' in st.session_state:
         st.success("✅ All clients initialized successfully")
-    except Exception as e:
-        st.error(f"❌ Error initializing clients: {str(e)}")
+    else:
+        st.error("❌ Clients not properly initialized")
         st.stop()
 
 # Configuration section
