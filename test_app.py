@@ -139,8 +139,9 @@ except Exception as e:
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
     try:
+        # The new Claude API returns the count directly as an integer
         token_count = st.session_state.clients['anthropic'].count_tokens(text)
-        return token_count.total_tokens
+        return token_count  # No need to access .total_tokens anymore
     except Exception as e:
         st.error(f"Error counting tokens: {str(e)}")
         return 0
