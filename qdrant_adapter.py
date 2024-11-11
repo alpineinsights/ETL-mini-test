@@ -3,9 +3,7 @@ QdrantAdapter class for managing vector storage operations with hybrid search ca
 Handles both dense embeddings from Voyage and sparse embeddings from TF-IDF.
 """
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, SparseIndexQuery
+from qdrant_client import QdrantClient, models
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
