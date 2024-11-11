@@ -402,19 +402,32 @@ def process_url(url: str) -> Dict[str, Any]:
     """Process a single URL and extract text content."""
     try:
         # Download and parse PDF
-        result = st.session_state.clients['llama_parser'].load_data(url)
+        documents = st.session_state.clients['llama_parser'].load_data(url)
         
+        # Handle the case where documents is a list
+        if isinstance(documents, list):
+            if not documents:
+                raise ValueError(f"No content extracted from {url}")
+            document = documents[0]  # Take the first document
+        else:
+            document = documents
+            
         # Extract metadata
         metadata = {
             "url": url,
-            "title": result.metadata.get("title", ""),
-            "author": result.metadata.get("author", ""),
-            "date": result.metadata.get("date", ""),
+            "title": getattr(document, "metadata", {}).get("title", ""),
+            "author": getattr(document, "metadata", {}).get("author", ""),
+            "date": getattr(document, "metadata", {}).get("date", ""),
             "processed_at": datetime.now().isoformat()
         }
         
+        # Extract text content
+        text = getattr(document, "text", "") or document.get("text", "")
+        if not text:
+            raise ValueError(f"No text content extracted from {url}")
+            
         return {
-            "text": result.text,
+            "text": text,
             "metadata": metadata
         }
     except Exception as e:
