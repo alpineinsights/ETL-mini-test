@@ -49,34 +49,18 @@ class QdrantAdapter:
             vectors_config = {
                 "dense": models.VectorParams(
                     size=dense_dim,
-                    distance=models.Distance.COSINE,
-                    on_disk=True
+                    distance=models.Distance.COSINE
                 ),
                 "sparse": models.VectorParams(
                     size=sparse_dim,
-                    distance=models.Distance.COSINE,
-                    on_disk=True
+                    distance=models.Distance.COSINE
                 )
             }
             
-            # Create collection with proper configuration
+            # Create collection with minimal configuration
             self.client.recreate_collection(
                 collection_name=self.collection_name,
-                vectors_config=vectors_config,
-                optimizers_config=models.OptimizersConfigDiff(
-                    default_segment_number=2,
-                    max_optimization_threads=2,
-                    memmap_threshold=1000,
-                    indexing_threshold=20000,
-                    flush_interval_sec=5
-                ),
-                hnsw_config=models.HnswConfigDiff(
-                    m=16,
-                    ef_construct=100,
-                    full_scan_threshold=10000
-                ),
-                quantization_config=None,
-                on_disk_payload=True
+                vectors_config=vectors_config
             )
             
             # Create payload indices
@@ -231,6 +215,7 @@ class QdrantAdapter:
     def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the current collection."""
         try:
+            info = None
             try:
                 info = self.client.get_collection(self.collection_name)
             except Exception:
@@ -238,19 +223,20 @@ class QdrantAdapter:
                 self.create_collection()
                 info = self.client.get_collection(self.collection_name)
             
-            # Extract only the essential information
-            collection_info = {
-                "name": getattr(info, "name", self.collection_name),
-                "status": getattr(info, "status", "unknown")
-            }
-            
-            # Safely add optional fields
-            if hasattr(info, "vectors_count"):
-                collection_info["vectors_count"] = info.vectors_count
-            if hasattr(info, "points_count"):
-                collection_info["points_count"] = info.points_count
+            if not info:
+                return {
+                    "name": self.collection_name,
+                    "status": "unknown",
+                    "vectors_count": 0,
+                    "points_count": 0
+                }
                 
-            return collection_info
+            return {
+                "name": info.name,
+                "status": info.status,
+                "vectors_count": getattr(info, "vectors_count", 0),
+                "points_count": getattr(info, "points_count", 0)
+            }
             
         except Exception as e:
             logger.error(f"Error getting collection info: {str(e)}")
