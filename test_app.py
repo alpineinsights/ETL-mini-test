@@ -20,9 +20,7 @@ import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, SparseIndexQuery
+from qdrant_client import QdrantClient, models
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
 
@@ -52,14 +50,14 @@ class QdrantAdapter:
     def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
-            dense_config = VectorParams(
+            dense_config = models.VectorParams(
                 size=dense_dim,
-                distance=Distance.COSINE,
+                distance=models.Distance.COSINE,
                 on_disk=True
             )
-            sparse_config = VectorParams(
+            sparse_config = models.VectorParams(
                 size=sparse_dim,
-                distance=Distance.COSINE,
+                distance=models.Distance.COSINE,
                 on_disk=True
             )
             
@@ -129,7 +127,7 @@ class QdrantAdapter:
             sparse_embedding = self.compute_sparse_embedding(context_text)
             current_time = datetime.now().isoformat()
             
-            point = PointStruct(
+            point = models.PointStruct(
                 id=chunk_id,
                 payload={
                     "chunk_text": chunk_text,
@@ -169,10 +167,13 @@ class QdrantAdapter:
             if not query_text or not query_vector:
                 raise ValueError("Query text and vector cannot be empty")
                 
-            sparse_query = None
+            sparse_vector = None
             if use_sparse:
                 sparse_embedding = self.compute_sparse_embedding(query_text)
-                sparse_query = SparseIndexQuery(**sparse_embedding)
+                sparse_vector = models.SparseVector(
+                    indices=sparse_embedding["indices"],
+                    values=sparse_embedding["values"]
+                )
             
             search_params = {
                 "collection_name": self.collection_name,
@@ -183,8 +184,8 @@ class QdrantAdapter:
                 "with_vectors": False
             }
             
-            if sparse_query:
-                search_params["sparse_query"] = ("sparse", sparse_query)
+            if sparse_vector:
+                search_params["query_vector_2"] = ("sparse", sparse_vector)
                 
             if filter_conditions:
                 search_params["query_filter"] = models.Filter(**filter_conditions)
