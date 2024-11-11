@@ -32,6 +32,11 @@ class QdrantAdapter:
             collection_name: Name of the collection to use
             embedding_model: Name of the embedding model to use
         """
+        if not collection_name or not isinstance(collection_name, str):
+            raise ValueError("Collection name must be a non-empty string")
+        if embedding_model not in VECTOR_DIMENSIONS:
+            raise ValueError(f"Unsupported embedding model: {embedding_model}")
+        
         try:
             self.client = QdrantClient(
                 url=url,
@@ -130,6 +135,11 @@ class QdrantAdapter:
             logger.error(f"Error computing sparse embedding: {str(e)}")
             raise
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
+    )
     def upsert_chunk(self,
                      chunk_text: str,
                      context_text: str,
@@ -179,6 +189,11 @@ class QdrantAdapter:
             logger.error(f"Error upserting chunk {chunk_id}: {str(e)}")
             raise
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
+    )
     def search(self,
               query_text: str,
               query_vector: List[float],
