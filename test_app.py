@@ -32,7 +32,7 @@ sys.path.append(str(current_dir))
 
 # Local imports
 from init_utils import initialize_qdrant
-from qdrant_adapter import QdrantAdapter
+from qdrant_adapter import QdrantAdapter, VECTOR_DIMENSIONS
 
 # Set up logging
 logger = logging.getLogger(__name__)
