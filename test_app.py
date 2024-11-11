@@ -18,8 +18,220 @@ import json
 from pathlib import Path
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
-from typing import List, Dict, Any
-from qdrant_adapter import QdrantAdapter
+from typing import List, Dict, Any, Optional, Union
+import numpy as np
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+from qdrant_client.http.models import Distance, VectorParams, PointStruct, SparseIndexQuery
+from sklearn.feature_extraction.text import TfidfVectorizer
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+class QdrantAdapter:
+    """Handles interaction with Qdrant vector database for hybrid search."""
+    
+    def __init__(self, url: str, api_key: str, collection_name: str = "documents"):
+        """Initialize Qdrant client."""
+        try:
+            self.client = QdrantClient(url=url, api_key=api_key)
+            self.collection_name = collection_name
+            self.vectorizer = TfidfVectorizer(
+                lowercase=True,
+                strip_accents='unicode',
+                ngram_range=(1, 2),
+                max_features=768,
+                sublinear_tf=True
+            )
+            logger.info("Successfully initialized QdrantAdapter")
+        except Exception as e:
+            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            raise
+        
+    def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
+        """Create or recreate collection with specified vector dimensions."""
+        try:
+            dense_config = VectorParams(
+                size=dense_dim,
+                distance=Distance.COSINE,
+                on_disk=True
+            )
+            sparse_config = VectorParams(
+                size=sparse_dim,
+                distance=Distance.COSINE,
+                on_disk=True
+            )
+            
+            self.client.recreate_collection(
+                collection_name=self.collection_name,
+                vectors_config={
+                    "dense": dense_config,
+                    "sparse": sparse_config
+                }
+            )
+            
+            indices = [
+                ("timestamp", "datetime"),
+                ("filename", "keyword"),
+                ("chunk_index", "integer")
+            ]
+            
+            for field_name, field_type in indices:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=field_type
+                )
+            
+            logger.info(f"Created collection {self.collection_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating collection: {str(e)}")
+            raise
+
+    def compute_sparse_embedding(self, text: str) -> Dict[str, List]:
+        """Compute sparse embedding using TF-IDF vectorization."""
+        try:
+            if not text or not text.strip():
+                raise ValueError("Input text cannot be empty")
+                
+            sparse_vector = self.vectorizer.fit_transform([text]).toarray()[0]
+            non_zero_indices = np.nonzero(sparse_vector)[0]
+            non_zero_values = sparse_vector[non_zero_indices]
+            
+            if len(non_zero_indices) == 0:
+                raise ValueError("No features were extracted from the text")
+                
+            return {
+                "indices": non_zero_indices.tolist(),
+                "values": non_zero_values.tolist()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error computing sparse embedding: {str(e)}")
+            raise
+
+    def upsert_chunk(self,
+                     chunk_text: str,
+                     context_text: str,
+                     dense_embedding: List[float],
+                     metadata: Dict[str, Any],
+                     chunk_id: str) -> bool:
+        """Upsert a document chunk with both dense and sparse embeddings."""
+        try:
+            if not chunk_text or not context_text:
+                raise ValueError("Chunk text and context text cannot be empty")
+            if not dense_embedding or len(dense_embedding) == 0:
+                raise ValueError("Dense embedding cannot be empty")
+                
+            sparse_embedding = self.compute_sparse_embedding(context_text)
+            current_time = datetime.now().isoformat()
+            
+            point = PointStruct(
+                id=chunk_id,
+                payload={
+                    "chunk_text": chunk_text,
+                    "context": context_text,
+                    "timestamp": current_time,
+                    "vector_type": "hybrid",
+                    **metadata
+                },
+                vectors={
+                    "dense": dense_embedding,
+                    "sparse": sparse_embedding
+                }
+            )
+            
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=[point],
+                wait=True
+            )
+            
+            logger.info(f"Successfully upserted chunk {chunk_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error upserting chunk {chunk_id}: {str(e)}")
+            raise
+
+    def search(self,
+              query_text: str,
+              query_vector: List[float],
+              limit: int = 5,
+              use_sparse: bool = True,
+              score_threshold: float = 0.7,
+              filter_conditions: Optional[Dict] = None) -> List[Dict]:
+        """Perform hybrid search using dense and optionally sparse vectors."""
+        try:
+            if not query_text or not query_vector:
+                raise ValueError("Query text and vector cannot be empty")
+                
+            sparse_query = None
+            if use_sparse:
+                sparse_embedding = self.compute_sparse_embedding(query_text)
+                sparse_query = SparseIndexQuery(**sparse_embedding)
+            
+            search_params = {
+                "collection_name": self.collection_name,
+                "query_vector": ("dense", query_vector),
+                "limit": limit,
+                "score_threshold": score_threshold,
+                "with_payload": True,
+                "with_vectors": False
+            }
+            
+            if sparse_query:
+                search_params["sparse_query"] = ("sparse", sparse_query)
+                
+            if filter_conditions:
+                search_params["query_filter"] = models.Filter(**filter_conditions)
+            
+            results = self.client.search(**search_params)
+            
+            formatted_results = []
+            for hit in results:
+                formatted_results.append({
+                    "id": hit.id,
+                    "score": hit.score,
+                    "payload": hit.payload,
+                    "vector_distance": getattr(hit, "vector_distance", None)
+                })
+            
+            return formatted_results
+            
+        except Exception as e:
+            logger.error(f"Error performing search: {str(e)}")
+            raise
+    
+    def get_collection_info(self) -> Dict[str, Any]:
+        """Get information about the current collection."""
+        try:
+            info = self.client.get_collection(self.collection_name)
+            return {
+                "name": info.name,
+                "vectors_count": info.vectors_count,
+                "indexed_vectors_count": info.indexed_vectors_count,
+                "points_count": info.points_count,
+                "segments_count": info.segments_count,
+                "status": info.status,
+                "payload_schema": info.payload_schema
+            }
+        except Exception as e:
+            logger.error(f"Error getting collection info: {str(e)}")
+            raise
+    
+    def delete_collection(self) -> bool:
+        """Delete the current collection."""
+        try:
+            self.client.delete_collection(self.collection_name)
+            logger.info(f"Deleted collection {self.collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting collection: {str(e)}")
+            raise
 
 # Constants and initial setup
 STATE_FILE = "./.processed_urls.json"
@@ -186,454 +398,262 @@ def create_semantic_chunks(
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=5, min=5, max=60),
-    retry=retry_if_exception(lambda e: "overloaded_error" in str(e))
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
 )
-def get_chunk_context(client, chunk: str, full_doc: str, system_prompt: str, model: str):
-    """Get context with retry logic for overload errors"""
+def generate_context(chunk_text: str) -> str:
+    """Generate contextual description for a chunk of text using Claude"""
     try:
-        context = st.session_state.clients['anthropic'].messages.create(
-            model=model,
-            max_tokens=200,
-            messages=[
-                {
-                    "role": "user", 
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "<document>\n" + full_doc + "\n</document>",
-                            "cache_control": {"type": "ephemeral"}
-                        },
-                        {
-                            "type": "text",
-                            "text": "\nHere is the chunk we want to situate within the whole document:\n<chunk>\n" + chunk + "\n</chunk>"
-                        }
-                    ]
-                }
-            ]
+        message = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=1024,
+            temperature=0.0,
+            system="You are an expert at analyzing and summarizing text. Generate a detailed contextual description that captures the key information, relationships, and concepts from the provided text. Focus on creating a rich semantic representation that would be useful for retrieval.",
+            messages=[{
+                "role": "user",
+                "content": f"Generate a detailed contextual description for the following text:\n\n{chunk_text}"
+            }]
         )
-        return context
+        return message.content
     except Exception as e:
-        if "overloaded_error" in str(e):
-            st.warning(f"Claude is overloaded, retrying in a few seconds...")
-            raise e
-        raise e
+        logger.error(f"Error generating context: {str(e)}")
+        raise
 
-def process_document(url: str, metrics: dict, model: str, context_prompt: str) -> bool:
-    """Process a single document URL"""
+def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
+    """Process a PDF file and return extracted text and metadata"""
     try:
-        filename = unquote(url.split('/')[-1])
-        st.write(f"Downloading {filename}...")
+        result = st.session_state.clients['llama_parser'].load_data(file_path)
         
-        pdf_response = requests.get(url, timeout=30)
-        pdf_response.raise_for_status()
+        if not result or not result.text:
+            raise ValueError("No text extracted from PDF")
+            
+        metadata = {
+            "filename": filename,
+            "title": result.metadata.get("title", ""),
+            "author": result.metadata.get("author", ""),
+            "creation_date": result.metadata.get("creation_date", ""),
+            "page_count": result.metadata.get("page_count", 0)
+        }
         
-        temp_path = TEMP_DIR / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
-        
-        with open(temp_path, 'wb') as f:
-            f.write(pdf_response.content)
-        
-        try:
-            st.write("Parsing document...")
-            st.write(f"PDF file size: {os.path.getsize(temp_path)} bytes")
-            
-            parsed_docs = st.session_state.clients['llama_parser'].load_data(str(temp_path))
-            
-            if not parsed_docs:
-                st.warning(f"No sections found in document: {filename}")
-                return False
-                
-            st.write(f"Found {len(parsed_docs)} sections")
-            
-            for doc in parsed_docs:
-                full_doc_text = doc.text
-                st.write(f"Full document length: {len(full_doc_text)} characters")
-                
-                chunks = create_semantic_chunks(
-                    text=full_doc_text,
-                    max_tokens=chunk_size,
-                    overlap_tokens=chunk_overlap
-                )
-                
-                metrics['total_chunks'] += len(chunks)
-                st.write(f"Created {len(chunks)} chunks")
-                
-                chunk_progress = st.progress(0)
-                for i, chunk_data in enumerate(chunks):
-                    try:
-                        chunk_text = chunk_data['text']
-                        chunk_tokens = chunk_data['tokens']
-                        
-                        st.write(f"Processing chunk {i+1}/{len(chunks)}...")
-                        context = get_chunk_context(
-                            client=st.session_state.clients['anthropic'],
-                            chunk=chunk_text,
-                            full_doc=full_doc_text,
-                            system_prompt=context_prompt,
-                            model=model
-                        )
-                        
-                        context_text = context.content[0].text
-                        
-                        # Get dense embedding using Voyage
-                        combined_text = chunk_text + "\n\n" + context_text
-                        dense_embedding = st.session_state.clients['embed_model'].get_text_embedding(combined_text)
-                        
-                        # Store in Qdrant
-                        chunk_id = f"{filename}-{i}"
-                        metadata = {
-                            'filename': filename,
-                            'chunk_index': i,
-                            'url': url,
-                            'timestamp': datetime.now().isoformat(),
-                            'model': model
-                        }
-                        
-                        success = st.session_state.clients['qdrant'].upsert_chunk(
-                            chunk_text=chunk_text,
-                            context_text=context_text,
-                            dense_embedding=dense_embedding,
-                            metadata=metadata,
-                            chunk_id=chunk_id
-                        )
-                        
-                        if success:
-                            metrics['stored_vectors'] += 1
-                        
-                        metrics['successful_chunks'] += 1
-                        metrics['total_tokens'] += chunk_tokens
-                        chunk_progress.progress((i + 1) / len(chunks))
-                        
-                        with st.expander(f"Chunk {i+1} Results", expanded=False):
-                            st.write("Context:", context_text)
-                            st.write("Dense Embedding Size:", len(dense_embedding))
-                            st.write("Tokens in chunk:", chunk_tokens)
-                            st.write("Vector Storage:", "Success" if success else "Failed")
-                            
-                        if hasattr(context, 'usage'):
-                            if context.usage.cache_read_input_tokens > 0:
-                                metrics['cache_hits'] += 1
-                        
-                    except Exception as e:
-                        metrics['failed_chunks'] += 1
-                        metrics['errors'].append(f"Chunk processing error in {url}: {str(e)}")
-                        st.error(f"Error processing chunk: {str(e)}")
-                        continue
-            
-            return True
-            
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-                
+        return {
+            "text": result.text,
+            "metadata": metadata
+        }
     except Exception as e:
-        metrics['errors'].append(f"Document processing error for {url}: {str(e)}")
-        st.error(f"Error processing document: {str(e)}")
-        return False
+        logger.error(f"Error processing PDF {filename}: {str(e)}")
+        raise
 
-# Page configuration
-st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
-
-# Client verification in UI
-with st.expander("Client Initialization", expanded=True):
-    all_initialized = True
-    for client_name, client in st.session_state.clients.items():
-        if client:
-            st.success(f"✅ {client_name} initialized successfully")
-        else:
-            st.error(f"❌ {client_name} not initialized")
-            all_initialized = False
+def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
+    """Process text chunks to generate context and embeddings"""
+    processed_chunks = []
     
-    if not all_initialized:
-        st.stop()
+    for i, chunk in enumerate(chunks):
+        try:
+            # Generate context
+            context = generate_context(chunk['text'])
+            
+            # Generate embedding
+            embedding = st.session_state.clients['embed_model'].embed_query(context)
+            
+            # Create chunk metadata
+            chunk_metadata = {
+                **metadata,
+                "chunk_index": i,
+                "chunk_tokens": chunk['tokens']
+            }
+            
+            # Store in Qdrant
+            chunk_id = f"{metadata['filename']}_{i}"
+            st.session_state.clients['qdrant'].upsert_chunk(
+                chunk_text=chunk['text'],
+                context_text=context,
+                dense_embedding=embedding,
+                metadata=chunk_metadata,
+                chunk_id=chunk_id
+            )
+            
+            processed_chunks.append({
+                "id": chunk_id,
+                "text": chunk['text'],
+                "context": context,
+                "metadata": chunk_metadata
+            })
+            
+            # Update metrics
+            st.session_state.processing_metrics['successful_chunks'] += 1
+            st.session_state.processing_metrics['total_tokens'] += chunk['tokens']
+            st.session_state.processing_metrics['stored_vectors'] += 1
+            
+        except Exception as e:
+            logger.error(f"Error processing chunk {i}: {str(e)}")
+            st.session_state.processing_metrics['failed_chunks'] += 1
+            st.session_state.processing_metrics['errors'].append(str(e))
+            continue
+    
+    return processed_chunks
 
-# Configuration sections
-with st.expander("Processing Configuration", expanded=True):
-    col1, col2 = st.columns(2)
+def display_metrics():
+    """Display current processing metrics"""
+    metrics = st.session_state.processing_metrics
+    
+    if metrics['start_time']:
+        elapsed_time = datetime.now() - metrics['start_time']
+        st.write(f"Processing time: {elapsed_time}")
+    
+    col1, col2, col3 = st.columns(3)
+    
     with col1:
-        chunk_size = st.number_input(
-            "Chunk Size (tokens)", 
-            value=1000,
-            min_value=100,
-            max_value=4000
-        )
-        chunk_overlap = st.number_input(
-            "Chunk Overlap (tokens)",
-            value=200,
-            min_value=0,
-            max_value=1000
-        )
-        model = st.selectbox(
-            "Claude Model",
-            options=[
-                "claude-3-haiku-20240307",
-                "claude-3-sonnet-20240229",
-                "claude-3-opus-20240229"
-            ],
-            index=0
-        )
+        st.metric("Documents Processed", 
+                 f"{metrics['processed_documents']}/{metrics['total_documents']}")
     with col2:
-        context_prompt = st.text_area(
-            "Context Prompt",
-            value="""
-    <document>
-    {doc_content}
-    </document>
+        st.metric("Successful Chunks", metrics['successful_chunks'])
+    with col3:
+        st.metric("Failed Chunks", metrics['failed_chunks'])
+    
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        st.metric("Total Tokens", metrics['total_tokens'])
+    with col5:
+        st.metric("Stored Vectors", metrics['stored_vectors'])
+    with col6:
+        st.metric("Cache Hits", metrics['cache_hits'])
+    
+    if metrics['errors']:
+        with st.expander("Processing Errors"):
+            for error in metrics['errors']:
+                st.error(error)
 
-    Here is the chunk we want to situate within the whole document
-    <chunk>
-    {chunk_content}
-    </chunk>
+def reset_metrics():
+    """Reset processing metrics to initial state"""
+    st.session_state.processing_metrics = {
+        'total_documents': 0,
+        'processed_documents': 0,
+        'total_chunks': 0,
+        'successful_chunks': 0,
+        'failed_chunks': 0,
+        'cache_hits': 0,
+        'total_tokens': 0,
+        'stored_vectors': 0,
+        'start_time': None,
+        'errors': []
+    }
 
-    Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk.
-    Answer only with the succinct context and nothing else.""",
-            height=200
-        )
-        force_reprocess = st.checkbox("Force Reprocess All")
+# Streamlit UI
+st.title("Document Processing Pipeline")
+
+# Sidebar controls
+with st.sidebar:
+    st.header("Controls")
+    
+    if st.button("Reset Metrics"):
+        reset_metrics()
+        st.success("Metrics reset successfully")
+    
+    if st.button("Delete Collection"):
+        try:
+            st.session_state.clients['qdrant'].delete_collection()
+            st.success("Collection deleted successfully")
+        except Exception as e:
+            st.error(f"Error deleting collection: {str(e)}")
+    
+    if st.button("Create Collection"):
+        try:
+            st.session_state.clients['qdrant'].create_collection()
+            st.success("Collection created successfully")
+        except Exception as e:
+            st.error(f"Error creating collection: {str(e)}")
+    
+    # Collection info
+    st.header("Collection Info")
+    try:
+        info = st.session_state.clients['qdrant'].get_collection_info()
+        st.write(info)
+    except Exception as e:
+        st.error(f"Error getting collection info: {str(e)}")
+
+# Main content
+tab1, tab2 = st.tabs(["Process Documents", "Search"])
+
+with tab1:
+    st.header("Upload Documents")
+    
+    uploaded_files = st.file_uploader(
+        "Upload PDF files",
+        type=['pdf'],
+        accept_multiple_files=True
+    )
+    
+    if uploaded_files:
+        st.session_state.processing_metrics['total_documents'] = len(uploaded_files)
+        st.session_state.processing_metrics['start_time'] = datetime.now()
         
-with st.expander("Vector Storage Configuration", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        embedding_model = st.selectbox(
-            "Embedding Model",
-            options=["voyage-finance-2", "voyage-01", "voyage-02"],
-            index=0
-        )
-        dense_dim = st.number_input(
-            "Dense Vector Dimension",
-            value=1024
-        )
-    with col2:
-        sparse_dim = st.number_input(
-            "Sparse Vector Dimension",
-            value=768
-        )
-        use_sparse = st.checkbox(
-            "Enable Sparse Embeddings",
-            value=True
-        )
-        
-    if st.button("Initialize Qdrant Collection"):
-        with st.spinner("Initializing collection..."):
+        for uploaded_file in uploaded_files:
             try:
-                st.session_state.clients['qdrant'].create_collection(
-                    dense_dim=dense_dim,
-                    sparse_dim=sparse_dim
-                )
-                st.success("✅ Qdrant collection initialized")
-            except Exception as e:
-                st.error(f"Failed to initialize collection: {str(e)}")
-
-# Main UI section
-st.title("PDF Processing Pipeline")
-st.subheader("Process PDFs from Sitemap")
-
-sitemap_url = st.text_input(
-    "Enter Sitemap URL",
-    value="https://alpinedatalake7.s3.eu-west-3.amazonaws.com/sitemap.xml"
-)
-
-if st.button("Start Processing"):
-    try:
-        # Reset metrics for new processing run
-        st.session_state.processing_metrics = {
-            'total_documents': 0,
-            'processed_documents': 0,
-            'total_chunks': 0,
-            'successful_chunks': 0,
-            'failed_chunks': 0,
-            'cache_hits': 0,
-            'total_tokens': 0,
-            'stored_vectors': 0,
-            'start_time': datetime.now(),
-            'errors': []
-        }
-        
-        st.write("Fetching sitemap...")
-        response = requests.get(sitemap_url, timeout=30)
-        response.raise_for_status()
-        
-        root = ET.fromstring(response.content)
-        
-        namespaces = {
-            None: "",
-            "ns": "http://www.sitemaps.org/schemas/sitemap/0.9"
-        }
-        
-        pdf_urls = []
-        for ns in namespaces.values():
-            if ns:
-                urls = root.findall(f".//{{{ns}}}loc")
-            else:
-                urls = root.findall(".//loc")
-            
-            pdf_urls.extend([url.text for url in urls if url.text.lower().endswith('.pdf')])
-            if pdf_urls:
-                break
-        
-        if not pdf_urls:
-            st.error("No PDF URLs found in sitemap")
-            st.code(response.text, language="xml")
-            st.stop()
-            
-        st.write(f"Found {len(pdf_urls)} PDFs")
-        
-        # Display PDF list in an expander
-        with st.expander("Show PDF URLs"):
-            for url in pdf_urls:
-                st.write(f"- {unquote(url.split('/')[-1])}")
-        
-        if not force_reprocess:
-            new_urls = [url for url in pdf_urls if url not in st.session_state.processed_urls]
-            skipped = len(pdf_urls) - len(new_urls)
-            if skipped > 0:
-                st.info(f"Skipping {skipped} previously processed documents")
-            pdf_urls = new_urls
-        
-        if not pdf_urls:
-            st.success("No new documents to process!")
-            st.stop()
-        
-        st.session_state.processing_metrics['total_documents'] = len(pdf_urls)
-        
-        # Create columns for metrics display
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        metrics_cols = st.columns(5)
-        
-        for i, url in enumerate(pdf_urls):
-            status_text.text(f"Processing document {i+1}/{len(pdf_urls)}: {unquote(url.split('/')[-1])}")
-            
-            success = process_document(
-                url=url,
-                metrics=st.session_state.processing_metrics,
-                model=model,
-                context_prompt=context_prompt
-            )
-            
-            if success:
-                st.session_state.processing_metrics['processed_documents'] += 1
-                st.session_state.processed_urls.add(url)
-            
-            progress_bar.progress((i + 1) / len(pdf_urls))
-            
-            # Update metrics display
-            with metrics_cols[0]:
-                st.metric(
-                    "Documents Processed", 
-                    f"{st.session_state.processing_metrics['processed_documents']}/{st.session_state.processing_metrics['total_documents']}"
-                )
-            with metrics_cols[1]:
-                st.metric(
-                    "Chunks Processed", 
-                    st.session_state.processing_metrics['successful_chunks']
-                )
-            with metrics_cols[2]:
-                st.metric(
-                    "Cache Hits", 
-                    st.session_state.processing_metrics['cache_hits']
-                )
-            with metrics_cols[3]:
-                if st.session_state.processing_metrics['successful_chunks'] > 0:
-                    avg_tokens = (
-                        st.session_state.processing_metrics['total_tokens'] / 
-                        st.session_state.processing_metrics['successful_chunks']
-                    )
-                    st.metric(
-                        "Avg Tokens/Chunk",
-                        f"{avg_tokens:.0f}"
-                    )
-            with metrics_cols[4]:
-                elapsed = datetime.now() - st.session_state.processing_metrics['start_time']
-                st.metric(
-                    "Processing Time", 
-                    f"{elapsed.total_seconds():.1f}s"
-                )
-        
-        save_processed_urls(st.session_state.processed_urls)
-        
-        # Final success message with detailed metrics
-        st.success(f"""
-            Processing complete!
-            - Documents processed: {st.session_state.processing_metrics['processed_documents']}/{st.session_state.processing_metrics['total_documents']}
-            - Successful chunks: {st.session_state.processing_metrics['successful_chunks']}
-            - Failed chunks: {st.session_state.processing_metrics['failed_chunks']}
-            - Cache hits: {st.session_state.processing_metrics['cache_hits']}
-            - Vectors stored: {st.session_state.processing_metrics['stored_vectors']}
-            - Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}
-            - Total processing time: {(datetime.now() - st.session_state.processing_metrics['start_time']).total_seconds():.1f}s
-        """)
-        
-        # Display any errors in an expander
-        if st.session_state.processing_metrics['errors']:
-            with st.expander("Show Errors", expanded=False):
-                for error in st.session_state.processing_metrics['errors']:
-                    st.error(error)
-                    
-    except Exception as e:
-        st.error(f"Error processing sitemap: {str(e)}")
-
-# Show current processing state
-with st.expander("Current Processing State", expanded=False):
-    st.write(f"Previously processed URLs: {len(st.session_state.processed_urls)}")
-    if st.session_state.processed_urls:
-        for url in sorted(st.session_state.processed_urls):
-            st.write(f"- {unquote(url.split('/')[-1])}")
-            
-    # Add Qdrant collection info
-    try:
-        collection_info = st.session_state.clients['qdrant'].get_collection_info()
-        st.write("\nQdrant Collection Statistics:")
-        st.write(f"- Total points: {collection_info['points_count']}")
-        st.write(f"- Total vectors: {collection_info['vectors_count']}")
-        st.write(f"- Collection status: {collection_info['status']}")
-    except Exception as e:
-        st.write("\nQdrant collection not initialized yet")
-            
-    if st.session_state.processing_metrics['successful_chunks'] > 0:
-        st.write("\nProcessing Statistics:")
-        avg_tokens = st.session_state.processing_metrics['total_tokens'] / st.session_state.processing_metrics['successful_chunks']
-        st.write(f"- Average tokens per chunk: {avg_tokens:.0f}")
-        st.write(f"- Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}")
-        st.write(f"- Total vectors stored: {st.session_state.processing_metrics['stored_vectors']}")
-        st.write(f"- Cache hits: {st.session_state.processing_metrics['cache_hits']}")
-
-# Add search interface
-with st.expander("Search Documents", expanded=False):
-    search_query = st.text_input("Enter search query")
-    search_limit = st.number_input("Number of results", min_value=1, max_value=20, value=5)
-    use_hybrid = st.checkbox("Use hybrid search (dense + sparse)", value=True)
-    
-    if st.button("Search") and search_query:
-        try:
-            # Get dense embedding for query
-            query_embedding = st.session_state.clients['embed_model'].get_text_embedding(search_query)
-            
-            # Search documents
-            results = st.session_state.clients['qdrant'].search(
-                query_text=search_query,
-                query_vector=query_embedding,
-                limit=search_limit,
-                use_sparse=use_hybrid,
-                score_threshold=0.5
-            )
-            
-            if results:
-                for i, result in enumerate(results, 1):
-                    st.markdown(f"### Result {i} (Score: {result['score']:.3f})")
-                    st.write("Context:", result['payload']['context'])
-                    with st.expander("Show full chunk"):
-                        st.write(result['payload']['chunk_text'])
-                    st.write("---")
-            else:
-                st.info("No results found")
+                # Save uploaded file temporarily
+                temp_path = TEMP_DIR / uploaded_file.name
+                with open(temp_path, 'wb') as f:
+                    f.write(uploaded_file.getvalue())
                 
+                # Process PDF
+                result = process_pdf(str(temp_path), uploaded_file.name)
+                
+                # Create chunks
+                chunks = create_semantic_chunks(result['text'])
+                st.session_state.processing_metrics['total_chunks'] += len(chunks)
+                
+                # Process chunks
+                processed_chunks = process_chunks(chunks, result['metadata'])
+                
+                # Update metrics
+                st.session_state.processing_metrics['processed_documents'] += 1
+                
+                # Clean up
+                temp_path.unlink()
+                
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
+                st.session_state.processing_metrics['errors'].append(str(e))
+                continue
+        
+        st.success("Processing complete!")
+    
+    # Display metrics
+    st.header("Processing Metrics")
+    display_metrics()
+
+with tab2:
+    st.header("Search Documents")
+    
+    query = st.text_input("Enter your search query")
+    
+    if query:
+        try:
+            # Generate query embedding
+            query_embedding = st.session_state.clients['embed_model'].embed_query(query)
+            
+            # Search
+            results = st.session_state.clients['qdrant'].search(
+                query_text=query,
+                query_vector=query_embedding,
+                limit=5
+            )
+            
+            # Display results
+            for i, result in enumerate(results, 1):
+                with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
+                    st.write("**Original Text:**")
+                    st.write(result['payload']['chunk_text'])
+                    st.write("**Context:**")
+                    st.write(result['payload']['context'])
+                    st.write("**Metadata:**")
+                    metadata = {k: v for k, v in result['payload'].items() 
+                              if k not in ['chunk_text', 'context']}
+                    st.json(metadata)
+            
         except Exception as e:
             st.error(f"Error performing search: {str(e)}")
 
-# Cleanup temp directory on exit
-for file in TEMP_DIR.glob("*"):
-    try:
-        os.remove(file)
-    except:
-        pass
+# Footer
+st.markdown("---")
+st.markdown("Built with Streamlit, Claude, Voyage AI, and Qdrant")
