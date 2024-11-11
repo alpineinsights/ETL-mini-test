@@ -23,6 +23,14 @@ import numpy as np
 from qdrant_client import QdrantClient, models
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
+import sys
+from pathlib import Path
+
+# Add the current directory to Python path
+current_dir = Path(__file__).parent.absolute()
+sys.path.append(str(current_dir))
+
+# Local imports
 from init_utils import initialize_qdrant
 from qdrant_adapter import QdrantAdapter
 
