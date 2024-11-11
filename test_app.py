@@ -44,18 +44,25 @@ st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
-DEFAULT_QDRANT_URL = "https://your-qdrant-instance.com"
+DEFAULT_QDRANT_URL = "https://qdrant.your-domain.com"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
 
 # Initialize Qdrant client in session state
 if 'qdrant_client' not in st.session_state:
-    qdrant_client = initialize_qdrant()
-    if qdrant_client:
-        st.session_state.qdrant_client = QdrantAdapter(
-            url=st.secrets["QDRANT_URL"],
-            api_key=st.secrets["QDRANT_API_KEY"],
-            collection_name="documents"
-        )
+    try:
+        qdrant_client = initialize_qdrant()
+        if qdrant_client:
+            st.session_state.qdrant_client = QdrantAdapter(
+                url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name="documents",
+                embedding_model=DEFAULT_EMBEDDING_MODEL
+            )
+            logger.info("Successfully initialized Qdrant client")
+        else:
+            st.error("Failed to initialize Qdrant client")
+    except Exception as e:
+        st.error(f"Error initializing Qdrant client: {str(e)}")
 
 # Initialize other clients and session state
 if 'clients' not in st.session_state:
