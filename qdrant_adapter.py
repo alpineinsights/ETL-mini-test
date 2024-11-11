@@ -56,7 +56,7 @@ class QdrantAdapter:
             try:
                 info = self.client.get_collection(self.collection_name)
                 # Verify vector dimensions match
-                if info.vectors_config["dense"].size != self.dense_dim:
+                if info.config.params["dense"].size != self.dense_dim:
                     logger.warning("Vector dimensions mismatch. Recreating collection...")
                     self.create_collection()
             except Exception:
@@ -78,32 +78,31 @@ class QdrantAdapter:
             vectors_config = {
                 "dense": models.VectorParams(
                     size=self.dense_dim,
-                    distance=models.Distance.COSINE,
-                    on_disk=True  # Store vectors on disk for better memory usage
+                    distance=models.Distance.COSINE
                 ),
                 "sparse": models.VectorParams(
                     size=sparse_dim,
-                    distance=models.Distance.COSINE,
-                    on_disk=True
+                    distance=models.Distance.COSINE
                 )
             }
             
-            # Create collection without optimizer config
+            # Create collection
             self.client.recreate_collection(
                 collection_name=self.collection_name,
-                vectors_config=vectors_config
+                vectors_config=vectors_config,
+                optimizers_config=models.OptimizersConfigDiff(
+                    indexing_threshold=0,  # Disable auto-indexing
+                )
             )
             
             # Create payload indices
-            indices = [
+            for field_name, field_type in [
                 ("timestamp", "text"),
                 ("filename", "keyword"),
                 ("chunk_index", "integer"),
                 ("url", "keyword"),
                 ("source_type", "keyword")
-            ]
-            
-            for field_name, field_type in indices:
+            ]:
                 self.client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name=field_name,
