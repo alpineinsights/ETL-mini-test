@@ -70,10 +70,6 @@ class QdrantAdapter:
     def create_collection(self, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
-            # Validate dimensions
-            if self.dense_dim <= 0 or sparse_dim <= 0:
-                raise ValueError("Vector dimensions must be positive integers")
-                
             # Define vector configurations
             vectors_config = {
                 "dense": models.VectorParams(
@@ -86,28 +82,14 @@ class QdrantAdapter:
                 )
             }
             
-            # Create collection
+            # Create collection with minimal configuration
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0,  # Disable auto-indexing
+                    indexing_threshold=0  # Only specify required fields
                 )
             )
-            
-            # Create payload indices
-            for field_name, field_type in [
-                ("timestamp", "text"),
-                ("filename", "keyword"),
-                ("chunk_index", "integer"),
-                ("url", "keyword"),
-                ("source_type", "keyword")
-            ]:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field_name,
-                    field_schema=field_type
-                )
             
             logger.info(f"Created collection {self.collection_name}")
             return True
