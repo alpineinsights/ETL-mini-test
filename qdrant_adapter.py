@@ -82,12 +82,13 @@ class QdrantAdapter:
                 )
             }
             
-            # Create collection with minimal configuration
+            # Create collection with explicit optimizer config
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0  # Only specify required fields
+                    indexing_threshold=0,
+                    max_optimization_threads=4  # Set explicit default value
                 )
             )
             
