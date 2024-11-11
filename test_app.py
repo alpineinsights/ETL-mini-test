@@ -41,10 +41,10 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 
 # Configuration defaults
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_CHUNK_SIZE = 500
+DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
-DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"
+DEFAULT_QDRANT_URL = "https://your-qdrant-instance.com"
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
 
 # Initialize Qdrant client in session state
@@ -415,19 +415,6 @@ def save_processed_urls(urls: set) -> None:
             json.dump(list(urls), f)
     except Exception as e:
         logger.error(f"Error saving processed URLs: {str(e)}")
-
-# Add these constants at the top of the file after the imports
-VECTOR_DIMENSIONS = {
-    "voyage-finance-2": 1024,
-    "voyage-large-2": 1536,
-    "voyage-code-2": 1024
-}
-
-DEFAULT_CONTEXT_PROMPT = """Given the following text, please provide a concise summary that captures the key points and main ideas:
-
-Text: {text}
-
-Summary:"""
 
 # Streamlit UI
 st.title("Document Processing Pipeline")
