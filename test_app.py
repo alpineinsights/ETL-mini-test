@@ -75,7 +75,22 @@ if 'qdrant_client' not in st.session_state:
     except Exception as e:
         st.error(f"Error initializing Qdrant client: {str(e)}")
 
-# Initialize other clients and session state
+# Initialize session state for metrics if not exists
+if 'processing_metrics' not in st.session_state:
+    st.session_state.processing_metrics = {
+        'total_documents': 0,
+        'processed_documents': 0,
+        'total_chunks': 0,
+        'successful_chunks': 0,
+        'failed_chunks': 0,
+        'total_tokens': 0,
+        'stored_vectors': 0,
+        'cache_hits': 0,
+        'errors': [],
+        'start_time': None
+    }
+
+# Initialize clients in session state
 if 'clients' not in st.session_state:
     try:
         st.session_state.clients = {
@@ -100,21 +115,6 @@ if 'clients' not in st.session_state:
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
         st.stop()
-
-# Initialize session state for metrics if not exists
-if 'processing_metrics' not in st.session_state:
-    st.session_state.processing_metrics = {
-        'total_documents': 0,
-        'processed_documents': 0,
-        'total_chunks': 0,
-        'successful_chunks': 0,
-        'failed_chunks': 0,
-        'total_tokens': 0,
-        'stored_vectors': 0,
-        'cache_hits': 0,
-        'errors': [],
-        'start_time': None
-    }
 
 if 'processed_urls' not in st.session_state:
     st.session_state.processed_urls = set()
