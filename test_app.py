@@ -88,38 +88,33 @@ if 'clients' not in st.session_state:
             'embed_model': VoyageEmbedding(
                 model_name=DEFAULT_EMBEDDING_MODEL,
                 voyage_api_key=st.secrets['VOYAGE_API_KEY']
-            )
-        }
-        # Add Qdrant client if not already initialized
-        if 'qdrant_client' not in st.session_state:
-            st.session_state.clients['qdrant'] = QdrantAdapter(
+            ),
+            'qdrant': QdrantAdapter(
                 url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
                 api_key=st.secrets["QDRANT_API_KEY"],
                 collection_name="documents",
                 embedding_model=DEFAULT_EMBEDDING_MODEL
             )
+        }
+        logger.info("Successfully initialized all clients")
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
         st.stop()
 
 # Initialize session state for metrics if not exists
-def reset_metrics():
-    """Reset processing metrics to initial state"""
+if 'processing_metrics' not in st.session_state:
     st.session_state.processing_metrics = {
         'total_documents': 0,
         'processed_documents': 0,
         'total_chunks': 0,
         'successful_chunks': 0,
         'failed_chunks': 0,
-        'cache_hits': 0,
         'total_tokens': 0,
         'stored_vectors': 0,
-        'start_time': None,
-        'errors': []
+        'cache_hits': 0,
+        'errors': [],
+        'start_time': None
     }
-
-if 'processing_metrics' not in st.session_state:
-    reset_metrics()
 
 if 'processed_urls' not in st.session_state:
     st.session_state.processed_urls = set()
@@ -428,7 +423,18 @@ with st.sidebar:
     st.header("Controls")
     
     if st.button("Reset Metrics"):
-        reset_metrics()
+        st.session_state.processing_metrics = {
+            'total_documents': 0,
+            'processed_documents': 0,
+            'total_chunks': 0,
+            'successful_chunks': 0,
+            'failed_chunks': 0,
+            'total_tokens': 0,
+            'stored_vectors': 0,
+            'cache_hits': 0,
+            'errors': [],
+            'start_time': None
+        }
         st.success("Metrics reset successfully")
     
     if st.button("Delete Collection"):
@@ -448,8 +454,11 @@ with st.sidebar:
     # Collection info
     st.header("Collection Info")
     try:
-        info = st.session_state.clients['qdrant'].get_collection_info()
-        st.write(info)
+        if 'qdrant' in st.session_state.clients:
+            info = st.session_state.clients['qdrant'].get_collection_info()
+            st.write(info)
+        else:
+            st.error("Qdrant client not initialized")
     except Exception as e:
         st.error(f"Error getting collection info: {str(e)}")
     
