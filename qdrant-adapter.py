@@ -1,249 +1,517 @@
 """
-QdrantAdapter class for managing vector storage operations with hybrid search capabilities.
-Handles both dense embeddings from Voyage and sparse embeddings from TF-IDF.
+Streamlit application for building a contextual retrieval ETL pipeline.
+Processes PDFs and generates contextual embeddings using Claude, Voyage AI, and Qdrant.
 """
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, SparseIndexQuery
+import streamlit as st
+import anthropic
+import voyageai
+from llama_parse import LlamaParse
+from llama_index.embeddings.voyageai import VoyageEmbedding 
+import tempfile
+import shutil
+from datetime import datetime
+import requests
+import xml.etree.ElementTree as ET
+from urllib.parse import unquote
+import json
+from pathlib import Path
+import os
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from typing import List, Dict, Any, Optional, Union
 import numpy as np
+from qdrant_client import QdrantClient, models
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
-from datetime import datetime
+from init_utils import initialize_qdrant
+from qdrant_adapter import QdrantAdapter
 
+# Set up logging
 logger = logging.getLogger(__name__)
 
-class QdrantAdapter:
-    """Handles interaction with Qdrant vector database for hybrid search."""
-    
-    def __init__(self, url: str, api_key: str, collection_name: str = "documents"):
-        """
-        Initialize Qdrant client.
-        
-        Args:
-            url: Qdrant server URL
-            api_key: API key for authentication
-            collection_name: Name of the collection to use
-        """
-        try:
-            self.client = QdrantClient(url=url, api_key=api_key)
-            self.collection_name = collection_name
-            # Initialize TF-IDF vectorizer with parameters optimized for sparse embeddings
-            self.vectorizer = TfidfVectorizer(
-                lowercase=True,
-                strip_accents='unicode',
-                ngram_range=(1, 2),
-                max_features=768,  # Match sparse vector dimension
-                sublinear_tf=True  # Apply sublinear scaling to term frequencies
-            )
-            logger.info("Successfully initialized QdrantAdapter")
-        except Exception as e:
-            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
-            raise
-        
-    def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
-        """Create or recreate collection with specified vector dimensions."""
-        try:
-            # Define vector configurations
-            dense_config = VectorParams(
-                size=dense_dim,
-                distance=Distance.COSINE,
-                on_disk=True
-            )
-            
-            sparse_config = VectorParams(
-                size=sparse_dim,
-                distance=Distance.COSINE,
-                on_disk=True
-            )
-            
-            # Create collection with explicit optimizer config
-            self.client.recreate_collection(
-                collection_name=self.collection_name,
-                vectors_config={
-                    "dense": dense_config,
-                    "sparse": sparse_config
-                },
-                optimizers_config={
-                    "max_optimization_threads": 2  # Set explicit value
-                }
-            )
-            
-            # Create payload indices
-            indices = [
-                ("timestamp", "text"),
-                ("filename", "keyword"),
-                ("chunk_index", "integer"),
-                ("url", "keyword"),
-                ("source_type", "keyword")
-            ]
-            
-            for field_name, field_type in indices:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field_name,
-                    field_schema=field_type
-                )
-            
-            logger.info(f"Created collection {self.collection_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error creating collection: {str(e)}")
-            raise
+# Must be the first Streamlit command
+st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 
-    def compute_sparse_embedding(self, text: str) -> Dict[str, List]:
-        """
-        Compute sparse embedding using TF-IDF vectorization.
+# Initialize Qdrant client in session state
+if 'qdrant_client' not in st.session_state:
+    qdrant_client = initialize_qdrant()
+    if qdrant_client:
+        st.session_state.qdrant_client = QdrantAdapter(
+            url=st.secrets["QDRANT_URL"],
+            api_key=st.secrets["QDRANT_API_KEY"],
+            collection_name="documents"
+        )
+
+# Initialize other clients and session state
+if 'clients' not in st.session_state:
+    try:
+        st.session_state.clients = {
+            'anthropic': anthropic.Client(
+                api_key=st.secrets['ANTHROPIC_API_KEY']
+            ),
+            'llama_parser': LlamaParse(
+                api_key=st.secrets['LLAMA_PARSE_API_KEY']
+            ),
+            'embed_model': VoyageEmbedding(
+                model_name="voyage-finance-2",
+                voyage_api_key=st.secrets['VOYAGE_API_KEY']
+            ),
+            'qdrant': st.session_state.qdrant_client
+        }
+    except Exception as e:
+        st.error(f"Error initializing clients: {str(e)}")
+        st.stop()
+
+def count_tokens(text: str) -> int:
+    """Count the number of tokens in a text string"""
+    try:
+        token_count = st.session_state.clients['anthropic'].count_tokens(text)
+        return token_count
+    except Exception as e:
+        st.error(f"Error counting tokens: {str(e)}")
+        return 0
+
+def create_semantic_chunks(
+    text: str,
+    max_tokens: int = 1000,
+    overlap_tokens: int = 200
+) -> List[Dict[str, Any]]:
+    """Create semantically meaningful chunks from text"""
+    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    
+    chunks = []
+    current_chunk = []
+    current_tokens = 0
+    previous_paragraphs = []
+    
+    for paragraph in paragraphs:
+        paragraph_tokens = count_tokens(paragraph)
         
-        Args:
-            text: Input text to vectorize
+        if paragraph_tokens > max_tokens:
+            sentences = [s.strip() + '.' for s in paragraph.split('. ') if s.strip()]
+            for sentence in sentences:
+                sentence_tokens = count_tokens(sentence)
+                
+                if current_tokens + sentence_tokens > max_tokens:
+                    if current_chunk:
+                        chunk_text = '\n\n'.join(current_chunk)
+                        chunk_tokens = count_tokens(chunk_text)
+                        chunks.append({
+                            'text': chunk_text,
+                            'tokens': chunk_tokens
+                        })
+                        
+                        overlap_text = []
+                        overlap_token_count = 0
+                        for prev in reversed(previous_paragraphs):
+                            prev_tokens = count_tokens(prev)
+                            if overlap_token_count + prev_tokens <= overlap_tokens:
+                                overlap_text.insert(0, prev)
+                                overlap_token_count += prev_tokens
+                            else:
+                                break
+                        
+                        current_chunk = overlap_text
+                        current_tokens = overlap_token_count
+                    
+                current_chunk.append(sentence)
+                current_tokens += sentence_tokens
+                
+        elif current_tokens + paragraph_tokens > max_tokens:
+            chunk_text = '\n\n'.join(current_chunk)
+            chunk_tokens = count_tokens(chunk_text)
+            chunks.append({
+                'text': chunk_text,
+                'tokens': chunk_tokens
+            })
             
-        Returns:
-            Dict containing sparse vector indices and values
-        """
+            overlap_text = []
+            overlap_token_count = 0
+            for prev in reversed(previous_paragraphs):
+                prev_tokens = count_tokens(prev)
+                if overlap_token_count + prev_tokens <= overlap_tokens:
+                    overlap_text.insert(0, prev)
+                    overlap_token_count += prev_tokens
+                else:
+                    break
+            
+            current_chunk = overlap_text
+            current_tokens = overlap_token_count
+            current_chunk.append(paragraph)
+            current_tokens += paragraph_tokens
+            
+        else:
+            current_chunk.append(paragraph)
+            current_tokens += paragraph_tokens
+        
+        previous_paragraphs.append(paragraph)
+    
+    if current_chunk:
+        chunk_text = '\n\n'.join(current_chunk)
+        chunk_tokens = count_tokens(chunk_text)
+        chunks.append({
+            'text': chunk_text,
+            'tokens': chunk_tokens
+        })
+    
+    return chunks
+
+DEFAULT_PROMPT_TEMPLATE = """Give a short succinct context to situate this chunk within the overall enclosed document boader context for the purpose of improving similarity search retrieval of the chunk. 
+
+Make sure to list:
+1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
+2. The apparent date of the document (YYYY.MM.DD)
+3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
+4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
+
+Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
+
+Example:
+Main company: Saint Gobain
+Secondary companies: none
+date : 2024.11.21
+Q3 2024, third quarter of 2024
+Chunk is part of a releease of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage."""
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
+)
+def generate_context(chunk_text: str) -> str:
+    """Generate contextual description for a chunk of text using Claude"""
+    try:
+        message = client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=1024,
+            temperature=0.0,
+            system="You are an expert at analyzing and summarizing text. Generate a detailed contextual description that captures the key information, relationships, and concepts from the provided text. Focus on creating a rich semantic representation that would be useful for retrieval.",
+            messages=[{
+                "role": "user",
+                "content": f"{DEFAULT_PROMPT_TEMPLATE}\n\nText to analyze:\n{chunk_text}"
+            }]
+        )
+        return message.content
+    except Exception as e:
+        logger.error(f"Error generating context: {str(e)}")
+        raise
+
+def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
+    """Process a PDF file and return extracted text and metadata"""
+    try:
+        result = st.session_state.clients['llama_parser'].load_data(file_path)
+        
+        if not result or not result.text:
+            raise ValueError("No text extracted from PDF")
+            
+        metadata = {
+            "filename": filename,
+            "title": result.metadata.get("title", ""),
+            "author": result.metadata.get("author", ""),
+            "creation_date": result.metadata.get("creation_date", ""),
+            "page_count": result.metadata.get("page_count", 0)
+        }
+        
+        return {
+            "text": result.text,
+            "metadata": metadata
+        }
+    except Exception as e:
+        logger.error(f"Error processing PDF {filename}: {str(e)}")
+        raise
+
+def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
+    """Process text chunks to generate context and embeddings"""
+    processed_chunks = []
+    
+    for i, chunk in enumerate(chunks):
         try:
-            if not text or not text.strip():
-                raise ValueError("Input text cannot be empty")
-                
-            # Fit and transform the text
-            sparse_vector = self.vectorizer.fit_transform([text]).toarray()[0]
+            # Generate context
+            context = generate_context(chunk['text'])
             
-            # Get non-zero elements
-            non_zero_indices = np.nonzero(sparse_vector)[0]
-            non_zero_values = sparse_vector[non_zero_indices]
+            # Generate embedding
+            embedding = st.session_state.clients['embed_model'].embed_query(context)
             
-            # Validate output
-            if len(non_zero_indices) == 0:
-                raise ValueError("No features were extracted from the text")
-                
+            # Create chunk metadata
+            chunk_metadata = {
+                **metadata,
+                "chunk_index": i,
+                "chunk_tokens": chunk['tokens']
+            }
+            
+            # Store in Qdrant
+            chunk_id = f"{metadata['filename']}_{i}"
+            st.session_state.clients['qdrant'].upsert_chunk(
+                chunk_text=chunk['text'],
+                context_text=context,
+                dense_embedding=embedding,
+                metadata=chunk_metadata,
+                chunk_id=chunk_id
+            )
+            
+            processed_chunks.append({
+                "id": chunk_id,
+                "text": chunk['text'],
+                "context": context,
+                "metadata": chunk_metadata
+            })
+            
+            # Update metrics
+            st.session_state.processing_metrics['successful_chunks'] += 1
+            st.session_state.processing_metrics['total_tokens'] += chunk['tokens']
+            st.session_state.processing_metrics['stored_vectors'] += 1
+            
+        except Exception as e:
+            logger.error(f"Error processing chunk {i}: {str(e)}")
+            st.session_state.processing_metrics['failed_chunks'] += 1
+            st.session_state.processing_metrics['errors'].append(str(e))
+            continue
+    
+    return processed_chunks
+
+def display_metrics():
+    """Display current processing metrics"""
+    metrics = st.session_state.processing_metrics
+    
+    if metrics['start_time']:
+        elapsed_time = datetime.now() - metrics['start_time']
+        st.write(f"Processing time: {elapsed_time}")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Documents Processed", 
+                 f"{metrics['processed_documents']}/{metrics['total_documents']}")
+    with col2:
+        st.metric("Successful Chunks", metrics['successful_chunks'])
+    with col3:
+        st.metric("Failed Chunks", metrics['failed_chunks'])
+    
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        st.metric("Total Tokens", metrics['total_tokens'])
+    with col5:
+        st.metric("Stored Vectors", metrics['stored_vectors'])
+    with col6:
+        st.metric("Cache Hits", metrics['cache_hits'])
+    
+    if metrics['errors']:
+        with st.expander("Processing Errors"):
+            for error in metrics['errors']:
+                st.error(error)
+
+def reset_metrics():
+    """Reset processing metrics to initial state"""
+    st.session_state.processing_metrics = {
+        'total_documents': 0,
+        'processed_documents': 0,
+        'total_chunks': 0,
+        'successful_chunks': 0,
+        'failed_chunks': 0,
+        'cache_hits': 0,
+        'total_tokens': 0,
+        'stored_vectors': 0,
+        'start_time': None,
+        'errors': []
+    }
+
+def parse_sitemap(url: str = "https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml") -> List[str]:
+    """Parse XML sitemap and return list of URLs."""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Parse XML content
+        root = ET.fromstring(response.content)
+        
+        # Extract URLs (handle both sitemap and urlset root elements)
+        urls = []
+        
+        # Try sitemap namespace first
+        namespaces = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+        
+        # Look for URLs in both sitemap and url elements
+        for loc in root.findall('.//ns:loc', namespaces):
+            if loc.text:
+                urls.append(unquote(loc.text))
+        
+        logger.info(f"Found {len(urls)} URLs in sitemap")
+        return urls
+        
+    except Exception as e:
+        logger.error(f"Error parsing sitemap: {str(e)}")
+        raise
+
+def process_url(url: str) -> Dict[str, Any]:
+    """Process a URL and extract its content and metadata."""
+    try:
+        # Download the PDF file
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Create a temporary file to store the PDF
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
+        
+        try:
+            # Process the PDF using LlamaParse
+            result = st.session_state.clients['llama_parser'].load_data(temp_path)
+            
+            if not result or not result.text:
+                raise ValueError("No text extracted from PDF")
+            
+            # Extract filename from URL
+            filename = url.split('/')[-1]
+            
+            metadata = {
+                "url": url,
+                "filename": filename,
+                "source_type": "pdf",
+                "title": result.metadata.get("title", ""),
+                "author": result.metadata.get("author", ""),
+                "creation_date": result.metadata.get("creation_date", ""),
+                "page_count": result.metadata.get("page_count", 0)
+            }
+            
             return {
-                "indices": non_zero_indices.tolist(),
-                "values": non_zero_values.tolist()
+                "text": result.text,
+                "metadata": metadata
             }
             
-        except Exception as e:
-            logger.error(f"Error computing sparse embedding: {str(e)}")
-            raise
-
-    def upsert_chunk(self,
-                     chunk_text: str,
-                     context_text: str,
-                     dense_embedding: List[float],
-                     metadata: Dict[str, Any],
-                     chunk_id: str) -> bool:
-        """Upsert a document chunk with both dense and sparse embeddings."""
-        try:
-            # Input validation
-            if not chunk_text or not context_text:
-                raise ValueError("Chunk text and context text cannot be empty")
-            if not dense_embedding or len(dense_embedding) == 0:
-                raise ValueError("Dense embedding cannot be empty")
-                
-            # Compute sparse embedding from context
-            sparse_embedding = self.compute_sparse_embedding(context_text)
+        finally:
+            # Clean up temporary file
+            os.unlink(temp_path)
             
-            # Create point
-            point = models.PointStruct(
-                id=chunk_id,
-                payload={
-                    "chunk_text": chunk_text,
-                    "context": context_text,
-                    "timestamp": datetime.now().isoformat(),  # Store as ISO format string
-                    **metadata
-                },
-                vectors={
-                    "dense": dense_embedding,
-                    "sparse": models.SparseVector(
-                        indices=sparse_embedding["indices"],
-                        values=sparse_embedding["values"]
-                    )
-                }
+    except Exception as e:
+        logger.error(f"Error processing URL {url}: {str(e)}")
+        raise
+
+# Streamlit UI
+st.title("Document Processing Pipeline")
+
+# Sidebar controls
+with st.sidebar:
+    st.header("Controls")
+    
+    if st.button("Reset Metrics"):
+        reset_metrics()
+        st.success("Metrics reset successfully")
+    
+    if st.button("Delete Collection"):
+        try:
+            st.session_state.clients['qdrant'].delete_collection()
+            st.success("Collection deleted successfully")
+        except Exception as e:
+            st.error(f"Error deleting collection: {str(e)}")
+    
+    if st.button("Create Collection"):
+        try:
+            st.session_state.clients['qdrant'].create_collection()
+            st.success("Collection created successfully")
+        except Exception as e:
+            st.error(f"Error creating collection: {str(e)}")
+    
+    # Collection info
+    st.header("Collection Info")
+    try:
+        info = st.session_state.clients['qdrant'].get_collection_info()
+        st.write(info)
+    except Exception as e:
+        st.error(f"Error getting collection info: {str(e)}")
+
+# Main content
+tab1, tab2 = st.tabs(["Process Content", "Search"])
+
+with tab1:
+    st.header("Process Content")
+    
+    sitemap_url = st.text_input(
+        "Enter XML Sitemap URL",
+        value="https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml"
+    )
+    
+    if st.button("Process Sitemap"):
+        try:
+            # Parse sitemap
+            urls = parse_sitemap(sitemap_url)
+            st.session_state.processing_metrics['total_documents'] = len(urls)
+            st.session_state.processing_metrics['start_time'] = datetime.now()
+            
+            progress_bar = st.progress(0)
+            
+            for i, url in enumerate(urls):
+                try:
+                    # Check if URL was already processed
+                    if url in st.session_state.processed_urls:
+                        st.session_state.processing_metrics['cache_hits'] += 1
+                        continue
+                    
+                    # Process URL content
+                    result = process_url(url)
+                    
+                    # Create chunks
+                    chunks = create_semantic_chunks(result['text'])
+                    st.session_state.processing_metrics['total_chunks'] += len(chunks)
+                    
+                    # Process chunks
+                    processed_chunks = process_chunks(chunks, result['metadata'])
+                    
+                    # Update metrics
+                    st.session_state.processing_metrics['processed_documents'] += 1
+                    st.session_state.processed_urls.add(url)
+                    
+                    # Update progress
+                    progress_bar.progress((i + 1) / len(urls))
+                    
+                except Exception as e:
+                    st.error(f"Error processing {url}: {str(e)}")
+                    st.session_state.processing_metrics['errors'].append(str(e))
+                    continue
+            
+            save_processed_urls(st.session_state.processed_urls)
+            st.success("Processing complete!")
+            
+        except Exception as e:
+            st.error(f"Error processing sitemap: {str(e)}")
+    
+    # Display metrics
+    st.header("Processing Metrics")
+    display_metrics()
+
+with tab2:
+    st.header("Search Documents")
+    
+    query = st.text_input("Enter your search query")
+    
+    if query:
+        try:
+            # Generate query embedding
+            query_embedding = st.session_state.clients['embed_model'].embed_query(query)
+            
+            # Search
+            results = st.session_state.clients['qdrant'].search(
+                query_text=query,
+                query_vector=query_embedding,
+                limit=5
             )
             
-            # Upsert point
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[point],
-                wait=True
-            )
-            
-            logger.info(f"Successfully upserted chunk {chunk_id}")
-            return True
+            # Display results
+            for i, result in enumerate(results, 1):
+                with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
+                    st.write("**Original Text:**")
+                    st.write(result['payload']['chunk_text'])
+                    st.write("**Context:**")
+                    st.write(result['payload']['context'])
+                    st.write("**Metadata:**")
+                    metadata = {k: v for k, v in result['payload'].items() 
+                              if k not in ['chunk_text', 'context']}
+                    st.json(metadata)
             
         except Exception as e:
-            logger.error(f"Error upserting chunk {chunk_id}: {str(e)}")
-            raise
+            st.error(f"Error performing search: {str(e)}")
 
-    def search(self,
-              query_text: str,
-              query_vector: List[float],
-              limit: int = 5,
-              use_sparse: bool = True,
-              score_threshold: float = 0.7,
-              filter_conditions: Optional[Dict] = None) -> List[Dict]:
-        """Perform hybrid search using dense and sparse vectors."""
-        try:
-            # Prepare search parameters
-            search_params = {
-                "collection_name": self.collection_name,
-                "query_vector": query_vector,
-                "limit": limit,
-                "with_payload": True,
-                "with_vectors": False
-            }
-            
-            # Add sparse search if enabled
-            if use_sparse:
-                sparse_vector = self.compute_sparse_embedding(query_text)
-                search_params["query_vector_2"] = models.SparseVector(
-                    indices=sparse_vector["indices"],
-                    values=sparse_vector["values"]
-                )
-            
-            # Add filter if provided
-            if filter_conditions:
-                search_params["query_filter"] = models.Filter(**filter_conditions)
-            
-            # Execute search
-            results = self.client.search(**search_params)
-            
-            return [{
-                "id": hit.id,
-                "score": hit.score,
-                "payload": hit.payload
-            } for hit in results]
-            
-        except Exception as e:
-            logger.error(f"Error performing search: {str(e)}")
-            raise
-    
-    def get_collection_info(self) -> Dict[str, Any]:
-        """Get information about the current collection."""
-        try:
-            info = self.client.get_collection(self.collection_name)
-            if not info:
-                # Create collection if it doesn't exist
-                self.create_collection()
-                info = self.client.get_collection(self.collection_name)
-                
-            return {
-                "name": info.name,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status
-            }
-        except Exception as e:
-            logger.error(f"Error getting collection info: {str(e)}")
-            raise
-    
-    def delete_collection(self) -> bool:
-        """Delete the current collection."""
-        try:
-            self.client.delete_collection(self.collection_name)
-            logger.info(f"Deleted collection {self.collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting collection: {str(e)}")
-            raise
+# Footer
+st.markdown("---")
+st.markdown("Built with Streamlit, Claude, Voyage AI, and Qdrant")
