@@ -347,74 +347,43 @@ def display_metrics():
             for error in metrics['errors']:
                 st.error(error)
 
-def parse_sitemap(url: str = "https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml") -> List[str]:
+def parse_sitemap(url: str) -> List[str]:
     """Parse XML sitemap and return list of URLs."""
     try:
         response = requests.get(url)
         response.raise_for_status()
-        
-        # Parse XML content
         root = ET.fromstring(response.content)
         
-        # Extract URLs (handle both sitemap and urlset root elements)
+        # Extract URLs from sitemap
         urls = []
-        
-        # Try sitemap namespace first
-        namespaces = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        
-        # Look for URLs in both sitemap and url elements
-        for loc in root.findall('.//ns:loc', namespaces):
-            if loc.text:
-                urls.append(unquote(loc.text))
+        for url in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+            urls.append(url.text)
         
         logger.info(f"Found {len(urls)} URLs in sitemap")
         return urls
-        
     except Exception as e:
         logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
 def process_url(url: str) -> Dict[str, Any]:
-    """Process a URL and extract its content and metadata."""
+    """Process a single URL and extract text content."""
     try:
-        # Download the PDF file
-        response = requests.get(url)
-        response.raise_for_status()
+        # Download and parse PDF
+        result = st.session_state.clients['llama_parser'].load_data(url)
         
-        # Create a temporary file to store the PDF
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
+        # Extract metadata
+        metadata = {
+            "url": url,
+            "title": result.metadata.get("title", ""),
+            "author": result.metadata.get("author", ""),
+            "date": result.metadata.get("date", ""),
+            "processed_at": datetime.now().isoformat()
+        }
         
-        try:
-            # Process the PDF using LlamaParse
-            result = st.session_state.clients['llama_parser'].load_data(temp_path)
-            
-            if not result or not result.text:
-                raise ValueError("No text extracted from PDF")
-            
-            # Extract filename from URL
-            filename = url.split('/')[-1]
-            
-            metadata = {
-                "url": url,
-                "filename": filename,
-                "source_type": "pdf",
-                "title": result.metadata.get("title", ""),
-                "author": result.metadata.get("author", ""),
-                "creation_date": result.metadata.get("creation_date", ""),
-                "page_count": result.metadata.get("page_count", 0)
-            }
-            
-            return {
-                "text": result.text,
-                "metadata": metadata
-            }
-            
-        finally:
-            # Clean up temporary file
-            os.unlink(temp_path)
-            
+        return {
+            "text": result.text,
+            "metadata": metadata
+        }
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
