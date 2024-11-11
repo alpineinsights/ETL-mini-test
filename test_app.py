@@ -76,7 +76,8 @@ class QdrantAdapter:
                 ("timestamp", "text"),  # Changed from datetime to text
                 ("filename", "keyword"),
                 ("chunk_index", "integer"),
-                ("url", "keyword")  # Added URL index
+                ("url", "keyword"),  # Added URL index
+                ("source_type", "keyword")  # Added source type index
             ]
             
             for field_name, field_type in indices:
@@ -427,13 +428,13 @@ def generate_context(chunk_text: str) -> str:
     """Generate contextual description for a chunk of text using Claude"""
     try:
         message = client.messages.create(
-            model="claude-3-sonnet-20240229",
+            model="claude-3-haiku-20240307",
             max_tokens=1024,
             temperature=0.0,
             system="You are an expert at analyzing and summarizing text. Generate a detailed contextual description that captures the key information, relationships, and concepts from the provided text. Focus on creating a rich semantic representation that would be useful for retrieval.",
             messages=[{
                 "role": "user",
-                "content": f"Generate a detailed contextual description for the following text:\n\n{chunk_text}"
+                "content": f"{DEFAULT_PROMPT_TEMPLATE}\n\nText to analyze:\n{chunk_text}"
             }]
         )
         return message.content
@@ -561,55 +562,76 @@ def reset_metrics():
         'errors': []
     }
 
-def parse_sitemap(url: str) -> List[str]:
+def parse_sitemap(url: str = "https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml") -> List[str]:
     """Parse XML sitemap and return list of URLs."""
     try:
         response = requests.get(url)
         response.raise_for_status()
         
+        # Parse XML content
         root = ET.fromstring(response.content)
         
-        # Handle different XML namespaces
-        namespaces = {
-            'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'
-        }
-        
+        # Extract URLs (handle both sitemap and urlset root elements)
         urls = []
-        for url_elem in root.findall('.//ns:url', namespaces):
-            loc = url_elem.find('ns:loc', namespaces)
-            if loc is not None and loc.text:
+        
+        # Try sitemap namespace first
+        namespaces = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+        
+        # Look for URLs in both sitemap and url elements
+        for loc in root.findall('.//ns:loc', namespaces):
+            if loc.text:
                 urls.append(unquote(loc.text))
         
+        logger.info(f"Found {len(urls)} URLs in sitemap")
         return urls
         
     except Exception as e:
         logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
-def fetch_url_content(url: str) -> Dict[str, Any]:
-    """Fetch and process content from a URL."""
+def process_url(url: str) -> Dict[str, Any]:
+    """Process a URL and extract its content and metadata."""
     try:
+        # Download the PDF file
         response = requests.get(url)
         response.raise_for_status()
         
-        # Here you would add your HTML parsing logic
-        # For now, we'll just use the raw text
-        content = response.text
+        # Create a temporary file to store the PDF
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
         
-        metadata = {
-            "url": url,
-            "timestamp": datetime.now().isoformat(),
-            "content_type": response.headers.get('content-type', ''),
-            "length": len(content)
-        }
-        
-        return {
-            "text": content,
-            "metadata": metadata
-        }
-        
+        try:
+            # Process the PDF using LlamaParse
+            result = st.session_state.clients['llama_parser'].load_data(temp_path)
+            
+            if not result or not result.text:
+                raise ValueError("No text extracted from PDF")
+            
+            # Extract filename from URL
+            filename = url.split('/')[-1]
+            
+            metadata = {
+                "url": url,
+                "filename": filename,
+                "source_type": "pdf",
+                "title": result.metadata.get("title", ""),
+                "author": result.metadata.get("author", ""),
+                "creation_date": result.metadata.get("creation_date", ""),
+                "page_count": result.metadata.get("page_count", 0)
+            }
+            
+            return {
+                "text": result.text,
+                "metadata": metadata
+            }
+            
+        finally:
+            # Clean up temporary file
+            os.unlink(temp_path)
+            
     except Exception as e:
-        logger.error(f"Error fetching URL {url}: {str(e)}")
+        logger.error(f"Error processing URL {url}: {str(e)}")
         raise
 
 # Streamlit UI
@@ -646,50 +668,59 @@ with st.sidebar:
         st.error(f"Error getting collection info: {str(e)}")
 
 # Main content
-tab1, tab2 = st.tabs(["Process Documents", "Search"])
+tab1, tab2 = st.tabs(["Process Content", "Search"])
 
 with tab1:
-    st.header("Upload Documents")
+    st.header("Process Content")
     
-    uploaded_files = st.file_uploader(
-        "Upload PDF files",
-        type=['pdf'],
-        accept_multiple_files=True
+    sitemap_url = st.text_input(
+        "Enter XML Sitemap URL",
+        value="https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml"
     )
     
-    if uploaded_files:
-        st.session_state.processing_metrics['total_documents'] = len(uploaded_files)
-        st.session_state.processing_metrics['start_time'] = datetime.now()
-        
-        for uploaded_file in uploaded_files:
-            try:
-                # Save uploaded file temporarily
-                temp_path = TEMP_DIR / uploaded_file.name
-                with open(temp_path, 'wb') as f:
-                    f.write(uploaded_file.getvalue())
-                
-                # Process PDF
-                result = process_pdf(str(temp_path), uploaded_file.name)
-                
-                # Create chunks
-                chunks = create_semantic_chunks(result['text'])
-                st.session_state.processing_metrics['total_chunks'] += len(chunks)
-                
-                # Process chunks
-                processed_chunks = process_chunks(chunks, result['metadata'])
-                
-                # Update metrics
-                st.session_state.processing_metrics['processed_documents'] += 1
-                
-                # Clean up
-                temp_path.unlink()
-                
-            except Exception as e:
-                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-                st.session_state.processing_metrics['errors'].append(str(e))
-                continue
-        
-        st.success("Processing complete!")
+    if st.button("Process Sitemap"):
+        try:
+            # Parse sitemap
+            urls = parse_sitemap(sitemap_url)
+            st.session_state.processing_metrics['total_documents'] = len(urls)
+            st.session_state.processing_metrics['start_time'] = datetime.now()
+            
+            progress_bar = st.progress(0)
+            
+            for i, url in enumerate(urls):
+                try:
+                    # Check if URL was already processed
+                    if url in st.session_state.processed_urls:
+                        st.session_state.processing_metrics['cache_hits'] += 1
+                        continue
+                    
+                    # Process URL content
+                    result = process_url(url)
+                    
+                    # Create chunks
+                    chunks = create_semantic_chunks(result['text'])
+                    st.session_state.processing_metrics['total_chunks'] += len(chunks)
+                    
+                    # Process chunks
+                    processed_chunks = process_chunks(chunks, result['metadata'])
+                    
+                    # Update metrics
+                    st.session_state.processing_metrics['processed_documents'] += 1
+                    st.session_state.processed_urls.add(url)
+                    
+                    # Update progress
+                    progress_bar.progress((i + 1) / len(urls))
+                    
+                except Exception as e:
+                    st.error(f"Error processing {url}: {str(e)}")
+                    st.session_state.processing_metrics['errors'].append(str(e))
+                    continue
+            
+            save_processed_urls(st.session_state.processed_urls)
+            st.success("Processing complete!")
+            
+        except Exception as e:
+            st.error(f"Error processing sitemap: {str(e)}")
     
     # Display metrics
     st.header("Processing Metrics")
