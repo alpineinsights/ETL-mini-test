@@ -452,59 +452,59 @@ with st.sidebar:
     # Configuration
     st.header("Configuration")
     
-    # Chunking settings
-    st.subheader("Chunking Settings")
-    chunk_size = st.number_input(
-        "Chunk Size (tokens)",
-        min_value=100,
-        max_value=2000,
-        value=DEFAULT_CHUNK_SIZE,
-        help="Maximum number of tokens per chunk"
-    )
-    
-    chunk_overlap = st.number_input(
-        "Chunk Overlap (tokens)",
-        min_value=0,
-        max_value=500,
-        value=DEFAULT_CHUNK_OVERLAP,
-        help="Number of tokens to overlap between chunks"
-    )
-    
     # Model settings
     st.subheader("Model Settings")
     embedding_model = st.selectbox(
         "Embedding Model",
-        options=["voyage-finance-2", "voyage-large-2", "voyage-code-2"],
-        index=0,
-        help="Model to use for generating embeddings"
+        options=list(VECTOR_DIMENSIONS.keys()),
+        index=list(VECTOR_DIMENSIONS.keys()).index(DEFAULT_EMBEDDING_MODEL),
+        help="Select the embedding model to use"
     )
     
     llm_model = st.selectbox(
-        "Context Generation Model",
+        "LLM Model",
         options=[
             "claude-3-haiku-20240307",
             "claude-3-sonnet-20240229",
             "claude-3-opus-20240229"
         ],
         index=0,
-        help="Model to use for generating context"
+        help="Select the LLM model to use for context generation"
     )
     
-    # Infrastructure settings
-    st.subheader("Infrastructure")
+    # Vector store settings
+    st.subheader("Vector Store Settings")
     qdrant_url = st.text_input(
         "Qdrant URL",
         value=DEFAULT_QDRANT_URL,
         help="URL of your Qdrant instance"
     )
     
+    # Chunking settings
+    st.subheader("Chunking Settings")
+    chunk_size = st.number_input(
+        "Chunk Size",
+        min_value=100,
+        max_value=2000,
+        value=DEFAULT_CHUNK_SIZE,
+        help="Number of tokens per chunk"
+    )
+    
+    chunk_overlap = st.number_input(
+        "Chunk Overlap",
+        min_value=0,
+        max_value=500,
+        value=DEFAULT_CHUNK_OVERLAP,
+        help="Number of overlapping tokens between chunks"
+    )
+    
     # Context prompt
-    st.subheader("Context Generation")
+    st.subheader("Context Settings")
     context_prompt = st.text_area(
-        "Context Prompt Template",
-        value=DEFAULT_PROMPT_TEMPLATE,
+        "Context Prompt",
+        value=DEFAULT_CONTEXT_PROMPT,
         height=300,
-        help="Template for generating context from chunks"
+        help="Prompt template for context generation"
     )
 
 # Main content
