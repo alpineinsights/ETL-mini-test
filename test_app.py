@@ -46,6 +46,17 @@ DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
 DEFAULT_QDRANT_URL = "https://qdrant.your-domain.com"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
+DEFAULT_CONTEXT_PROMPT = """Given the following text, please provide a concise summary that captures the key points and main ideas:
+
+Text: {text}
+
+Summary:"""
+
+VECTOR_DIMENSIONS = {
+    "voyage-finance-2": 1024,
+    "voyage-large-2": 1536,
+    "voyage-code-2": 1024
+}
 
 # Initialize Qdrant client in session state
 if 'qdrant_client' not in st.session_state:
@@ -77,13 +88,16 @@ if 'clients' not in st.session_state:
             'embed_model': VoyageEmbedding(
                 model_name=DEFAULT_EMBEDDING_MODEL,
                 voyage_api_key=st.secrets['VOYAGE_API_KEY']
-            ),
-            'qdrant': QdrantAdapter(
-                url=DEFAULT_QDRANT_URL,
-                api_key=st.secrets["QDRANT_API_KEY"],
-                collection_name="documents"
             )
         }
+        # Add Qdrant client if not already initialized
+        if 'qdrant_client' not in st.session_state:
+            st.session_state.clients['qdrant'] = QdrantAdapter(
+                url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name="documents",
+                embedding_model=DEFAULT_EMBEDDING_MODEL
+            )
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
         st.stop()
@@ -204,23 +218,6 @@ def create_semantic_chunks(
     
     return chunks
 
-DEFAULT_PROMPT_TEMPLATE = """Give a short succinct context to situate this chunk within the overall enclosed document boader context for the purpose of improving similarity search retrieval of the chunk. 
-
-Make sure to list:
-1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
-2. The apparent date of the document (YYYY.MM.DD)
-3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
-4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
-
-Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
-
-Example:
-Main company: Saint Gobain
-Secondary companies: none
-date : 2024.11.21
-Q3 2024, third quarter of 2024
-Chunk is part of a releease of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage."""
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -236,7 +233,7 @@ def generate_context(chunk_text: str) -> str:
             system="You are an expert at analyzing and summarizing text...",
             messages=[{
                 "role": "user",
-                "content": f"{DEFAULT_PROMPT_TEMPLATE}\n\nText to analyze:\n{chunk_text}"
+                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to analyze:\n{chunk_text}"
             }]
         )
         return message.content
