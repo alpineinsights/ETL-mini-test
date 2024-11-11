@@ -291,7 +291,7 @@ try:
         voyage_api_key=st.secrets['VOYAGE_API_KEY']
     )
     qdrant_client = QdrantAdapter(
-        url="https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io",
+        url=st.secrets['QDRANT_URL'],
         api_key=st.secrets['QDRANT_API_KEY'],
         collection_name="documents"
     )
