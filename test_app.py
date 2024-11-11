@@ -350,19 +350,52 @@ def display_metrics():
 def parse_sitemap(url: str) -> List[str]:
     """Parse XML sitemap and return list of URLs."""
     try:
-        response = requests.get(url)
+        logger.info(f"Fetching sitemap from {url}")
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
-        root = ET.fromstring(response.content)
         
-        # Extract URLs from sitemap
-        urls = []
-        for url in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
-            urls.append(url.text)
+        # Log response details
+        logger.info(f"Sitemap response status: {response.status_code}")
+        logger.info(f"Sitemap content length: {len(response.content)} bytes")
         
-        logger.info(f"Found {len(urls)} URLs in sitemap")
-        return urls
+        # Parse XML content
+        try:
+            root = ET.fromstring(response.content)
+            logger.info(f"Successfully parsed XML content")
+            
+            # Extract URLs (try both with and without namespace)
+            urls = []
+            namespaces = [
+                './/{http://www.sitemaps.org/schemas/sitemap/0.9}loc',
+                './/loc'  # Try without namespace
+            ]
+            
+            for namespace in namespaces:
+                urls.extend([url.text for url in root.findall(namespace)])
+            
+            if not urls:
+                logger.warning("No URLs found in sitemap")
+                st.warning("No URLs found in sitemap. Please check the URL and XML format.")
+            else:
+                logger.info(f"Found {len(urls)} URLs in sitemap")
+                st.info(f"Found {len(urls)} URLs in sitemap")
+            
+            return urls
+            
+        except ET.ParseError as e:
+            logger.error(f"XML parsing error: {str(e)}")
+            st.error(f"Failed to parse XML content: {str(e)}")
+            # Log the first 500 characters of the response for debugging
+            logger.debug(f"Response content preview: {response.text[:500]}")
+            raise
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error: {str(e)}")
+        st.error(f"Failed to fetch sitemap: {str(e)}")
+        raise
     except Exception as e:
-        logger.error(f"Error parsing sitemap: {str(e)}")
+        logger.error(f"Unexpected error in parse_sitemap: {str(e)}")
+        st.error(f"Unexpected error while processing sitemap: {str(e)}")
         raise
 
 def process_url(url: str) -> Dict[str, Any]:
@@ -514,45 +547,55 @@ with tab1:
     
     if st.button("Process Sitemap"):
         try:
-            # Parse sitemap
-            urls = parse_sitemap(sitemap_url)
-            st.session_state.processing_metrics['total_documents'] = len(urls)
-            st.session_state.processing_metrics['start_time'] = datetime.now()
-            
-            progress_bar = st.progress(0)
-            
-            for i, url in enumerate(urls):
-                try:
-                    # Check if URL was already processed
-                    if url in st.session_state.processed_urls:
-                        st.session_state.processing_metrics['cache_hits'] += 1
+            with st.spinner("Parsing sitemap..."):
+                # Parse sitemap
+                urls = parse_sitemap(sitemap_url)
+                
+                if not urls:
+                    st.warning("No URLs found to process")
+                    st.stop()
+                    
+                st.session_state.processing_metrics['total_documents'] = len(urls)
+                st.session_state.processing_metrics['start_time'] = datetime.now()
+                
+                # Create progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for i, url in enumerate(urls):
+                    try:
+                        status_text.text(f"Processing URL {i+1}/{len(urls)}: {url}")
+                        
+                        # Check if URL was already processed
+                        if url in st.session_state.processed_urls:
+                            st.session_state.processing_metrics['cache_hits'] += 1
+                            continue
+                        
+                        # Process URL content
+                        result = process_url(url)
+                        
+                        # Create chunks
+                        chunks = create_semantic_chunks(result['text'])
+                        st.session_state.processing_metrics['total_chunks'] += len(chunks)
+                        
+                        # Process chunks
+                        processed_chunks = process_chunks(chunks, result['metadata'])
+                        
+                        # Update metrics
+                        st.session_state.processing_metrics['processed_documents'] += 1
+                        st.session_state.processed_urls.add(url)
+                        
+                        # Update progress
+                        progress_bar.progress((i + 1) / len(urls))
+                        
+                    except Exception as e:
+                        st.error(f"Error processing {url}: {str(e)}")
+                        st.session_state.processing_metrics['errors'].append(str(e))
                         continue
-                    
-                    # Process URL content
-                    result = process_url(url)
-                    
-                    # Create chunks
-                    chunks = create_semantic_chunks(result['text'])
-                    st.session_state.processing_metrics['total_chunks'] += len(chunks)
-                    
-                    # Process chunks
-                    processed_chunks = process_chunks(chunks, result['metadata'])
-                    
-                    # Update metrics
-                    st.session_state.processing_metrics['processed_documents'] += 1
-                    st.session_state.processed_urls.add(url)
-                    
-                    # Update progress
-                    progress_bar.progress((i + 1) / len(urls))
-                    
-                except Exception as e:
-                    st.error(f"Error processing {url}: {str(e)}")
-                    st.session_state.processing_metrics['errors'].append(str(e))
-                    continue
-            
-            save_processed_urls(st.session_state.processed_urls)
-            st.success("Processing complete!")
-            
+                
+                save_processed_urls(st.session_state.processed_urls)
+                st.success("Processing complete!")
+                
         except Exception as e:
             st.error(f"Error processing sitemap: {str(e)}")
     
