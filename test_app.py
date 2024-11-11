@@ -50,6 +50,7 @@ class QdrantAdapter:
     def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
+            # Define vector configurations
             dense_config = models.VectorParams(
                 size=dense_dim,
                 distance=models.Distance.COSINE,
@@ -61,6 +62,7 @@ class QdrantAdapter:
                 on_disk=True
             )
             
+            # Create collection with both vector types
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config={
@@ -69,10 +71,12 @@ class QdrantAdapter:
                 }
             )
             
+            # Create payload indices for efficient filtering
             indices = [
-                ("timestamp", "datetime"),
+                ("timestamp", "text"),  # Changed from datetime to text
                 ("filename", "keyword"),
-                ("chunk_index", "integer")
+                ("chunk_index", "integer"),
+                ("url", "keyword")  # Added URL index
             ]
             
             for field_name, field_type in indices:
@@ -539,6 +543,57 @@ def reset_metrics():
         'start_time': None,
         'errors': []
     }
+
+def parse_sitemap(url: str) -> List[str]:
+    """Parse XML sitemap and return list of URLs."""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        root = ET.fromstring(response.content)
+        
+        # Handle different XML namespaces
+        namespaces = {
+            'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'
+        }
+        
+        urls = []
+        for url_elem in root.findall('.//ns:url', namespaces):
+            loc = url_elem.find('ns:loc', namespaces)
+            if loc is not None and loc.text:
+                urls.append(unquote(loc.text))
+        
+        return urls
+        
+    except Exception as e:
+        logger.error(f"Error parsing sitemap: {str(e)}")
+        raise
+
+def fetch_url_content(url: str) -> Dict[str, Any]:
+    """Fetch and process content from a URL."""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Here you would add your HTML parsing logic
+        # For now, we'll just use the raw text
+        content = response.text
+        
+        metadata = {
+            "url": url,
+            "timestamp": datetime.now().isoformat(),
+            "content_type": response.headers.get('content-type', ''),
+            "length": len(content)
+        }
+        
+        return {
+            "text": content,
+            "metadata": metadata
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching URL {url}: {str(e)}")
+        raise
 
 # Streamlit UI
 st.title("Document Processing Pipeline")
