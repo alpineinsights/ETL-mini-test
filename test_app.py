@@ -1,13 +1,13 @@
 """
 Streamlit application for building a contextual retrieval ETL pipeline.
-Processes PDFs and generates contextual embeddings using various AI models.
+Processes PDFs and generates contextual embeddings using Claude, Voyage AI, and Qdrant.
 """
 
 import streamlit as st
 import anthropic
 import voyageai
 from llama_parse import LlamaParse
-from llama_index.embeddings.voyageai import VoyageEmbedding
+from llama_index.embeddings.voyageai import VoyageEmbedding 
 import tempfile
 import shutil
 from datetime import datetime
@@ -19,68 +19,7 @@ from pathlib import Path
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from typing import List, Dict, Any
-
-# Configuration Classes
-class CompanyConfig:
-    """Manages company names for the prompt system"""
-    
-    COMPANY_NAMES = [
-        "Apple Inc",
-        "Microsoft Corporation",
-        "Google LLC",
-        "Amazon.com Inc",
-        # ... Add more companies as needed
-    ]
-    
-    @classmethod
-    def get_company_names_prompt(cls):
-        """Returns formatted company names for use in the system prompt"""
-        return "\n".join(cls.COMPANY_NAMES)
-    
-    @classmethod
-    def validate_company_names(cls):
-        """Validates that company names are properly formatted"""
-        if not cls.COMPANY_NAMES:
-            raise ValueError("Company names list cannot be empty")
-        for company in cls.COMPANY_NAMES:
-            if not isinstance(company, str):
-                raise ValueError(f"Invalid company name type: {type(company)}")
-            if len(company.strip()) == 0:
-                raise ValueError("Company name cannot be empty")
-        return True
-
-class PromptConfig:
-    """Manages system prompts used in the application"""
-    
-    DEFAULT_PROMPT_TEMPLATE = """Give a short succinct context to situate this chunk within the overall enclosed document boader context for the purpose of improving similarity search retrieval of the chunk. 
-
-Make sure to list:
-1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
-2. The apparent date of the document (YYYY.MM.DD)
-3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
-4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
-
-Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
-
-Example:
-Main company: Saint Gobain
-Secondary companies: none
-date : 2024.11.21
-Q3 2024, third quarter of 2024
-Chunk is part of a releease of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage. 
-
-List of company names (use exact spelling) : 
-{company_names}"""
-
-    @classmethod
-    def get_default_prompt(cls):
-        """Returns the complete default prompt with company names"""
-        try:
-            return cls.DEFAULT_PROMPT_TEMPLATE.format(
-                company_names=CompanyConfig.get_company_names_prompt()
-            )
-        except Exception as e:
-            raise Exception(f"Error generating default prompt: {str(e)}")
+from qdrant_adapter import QdrantAdapter
 
 # Constants and initial setup
 STATE_FILE = "./.processed_urls.json"
@@ -114,6 +53,7 @@ if 'processing_metrics' not in st.session_state:
         'failed_chunks': 0,
         'cache_hits': 0,
         'total_tokens': 0,
+        'stored_vectors': 0,
         'start_time': None,
         'errors': []
     }
@@ -132,23 +72,29 @@ try:
         model_name="voyage-finance-2",
         voyage_api_key=st.secrets['VOYAGE_API_KEY']
     )
+    qdrant_client = QdrantAdapter(
+        url="https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io",
+        api_key=st.secrets['QDRANT_API_KEY'],
+        collection_name="documents"
+    )
     
     # Store clients in session state
     if 'clients' not in st.session_state:
         st.session_state.clients = {
             'anthropic': client,
             'llama_parser': llama_parser,
-            'embed_model': embed_model
+            'embed_model': embed_model,
+            'qdrant': qdrant_client
         }
 except Exception as e:
     st.error(f"Error initializing clients: {str(e)}")
     st.stop()
+
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
     try:
-        # The new Claude API returns the count directly as an integer
         token_count = st.session_state.clients['anthropic'].count_tokens(text)
-        return token_count  # No need to access .total_tokens anymore
+        return token_count
     except Exception as e:
         st.error(f"Error counting tokens: {str(e)}")
         return 0
@@ -158,28 +104,23 @@ def create_semantic_chunks(
     max_tokens: int = 1000,
     overlap_tokens: int = 200
 ) -> List[Dict[str, Any]]:
-    """
-    Create semantically meaningful chunks from text while respecting markdown structure.
-    """
-    # Split text into paragraphs using markdown line breaks
+    """Create semantically meaningful chunks from text"""
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
     
     chunks = []
     current_chunk = []
     current_tokens = 0
-    previous_paragraphs = []  # Store previous paragraphs for overlap
+    previous_paragraphs = []
     
     for paragraph in paragraphs:
         paragraph_tokens = count_tokens(paragraph)
         
-        # Handle paragraphs that exceed max tokens by splitting on sentences
         if paragraph_tokens > max_tokens:
             sentences = [s.strip() + '.' for s in paragraph.split('. ') if s.strip()]
             for sentence in sentences:
                 sentence_tokens = count_tokens(sentence)
                 
                 if current_tokens + sentence_tokens > max_tokens:
-                    # Create new chunk with overlap
                     if current_chunk:
                         chunk_text = '\n\n'.join(current_chunk)
                         chunk_tokens = count_tokens(chunk_text)
@@ -188,7 +129,6 @@ def create_semantic_chunks(
                             'tokens': chunk_tokens
                         })
                         
-                        # Add overlap from previous paragraphs
                         overlap_text = []
                         overlap_token_count = 0
                         for prev in reversed(previous_paragraphs):
@@ -205,9 +145,7 @@ def create_semantic_chunks(
                 current_chunk.append(sentence)
                 current_tokens += sentence_tokens
                 
-        # Normal paragraph handling
         elif current_tokens + paragraph_tokens > max_tokens:
-            # Create new chunk with overlap
             chunk_text = '\n\n'.join(current_chunk)
             chunk_tokens = count_tokens(chunk_text)
             chunks.append({
@@ -215,7 +153,6 @@ def create_semantic_chunks(
                 'tokens': chunk_tokens
             })
             
-            # Add overlap from previous paragraphs
             overlap_text = []
             overlap_token_count = 0
             for prev in reversed(previous_paragraphs):
@@ -237,7 +174,6 @@ def create_semantic_chunks(
         
         previous_paragraphs.append(paragraph)
     
-    # Add final chunk if there's content
     if current_chunk:
         chunk_text = '\n\n'.join(current_chunk)
         chunk_tokens = count_tokens(chunk_text)
@@ -259,7 +195,6 @@ def get_chunk_context(client, chunk: str, full_doc: str, system_prompt: str, mod
         context = st.session_state.clients['anthropic'].messages.create(
             model=model,
             max_tokens=200,
-            system=system_prompt,
             messages=[
                 {
                     "role": "user", 
@@ -338,18 +273,44 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
                             model=model
                         )
                         
-                        embedding = st.session_state.clients['embed_model'].get_text_embedding(chunk_text)
+                        context_text = context.content[0].text
+                        
+                        # Get dense embedding using Voyage
+                        combined_text = chunk_text + "\n\n" + context_text
+                        dense_embedding = st.session_state.clients['embed_model'].get_text_embedding(combined_text)
+                        
+                        # Store in Qdrant
+                        chunk_id = f"{filename}-{i}"
+                        metadata = {
+                            'filename': filename,
+                            'chunk_index': i,
+                            'url': url,
+                            'timestamp': datetime.now().isoformat(),
+                            'model': model
+                        }
+                        
+                        success = st.session_state.clients['qdrant'].upsert_chunk(
+                            chunk_text=chunk_text,
+                            context_text=context_text,
+                            dense_embedding=dense_embedding,
+                            metadata=metadata,
+                            chunk_id=chunk_id
+                        )
+                        
+                        if success:
+                            metrics['stored_vectors'] += 1
                         
                         metrics['successful_chunks'] += 1
                         metrics['total_tokens'] += chunk_tokens
                         chunk_progress.progress((i + 1) / len(chunks))
                         
                         with st.expander(f"Chunk {i+1} Results", expanded=False):
-                            st.write("Context:", context.content[0].text)
-                            st.write("Embedding size:", len(embedding))
+                            st.write("Context:", context_text)
+                            st.write("Dense Embedding Size:", len(dense_embedding))
                             st.write("Tokens in chunk:", chunk_tokens)
+                            st.write("Vector Storage:", "Success" if success else "Failed")
                             
-                        if hasattr(context, 'usage') and hasattr(context.usage, 'cache_read_input_tokens'):
+                        if hasattr(context, 'usage'):
                             if context.usage.cache_read_input_tokens > 0:
                                 metrics['cache_hits'] += 1
                         
@@ -369,34 +330,38 @@ def process_document(url: str, metrics: dict, model: str, context_prompt: str) -
         metrics['errors'].append(f"Document processing error for {url}: {str(e)}")
         st.error(f"Error processing document: {str(e)}")
         return False
+
 # Page configuration
 st.set_page_config(page_title="PDF Processing Pipeline", page_icon="📚", layout="wide")
 
 # Client verification in UI
 with st.expander("Client Initialization", expanded=True):
-    if 'clients' in st.session_state:
-        st.success("✅ All clients initialized successfully")
-    else:
-        st.error("❌ Clients not properly initialized")
+    all_initialized = True
+    for client_name, client in st.session_state.clients.items():
+        if client:
+            st.success(f"✅ {client_name} initialized successfully")
+        else:
+            st.error(f"❌ {client_name} not initialized")
+            all_initialized = False
+    
+    if not all_initialized:
         st.stop()
 
-# Configuration section
+# Configuration sections
 with st.expander("Processing Configuration", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         chunk_size = st.number_input(
-            "Chunk Size (in tokens)", 
+            "Chunk Size (tokens)", 
             value=1000,
             min_value=100,
-            max_value=4000,
-            help="Maximum number of tokens per chunk"
+            max_value=4000
         )
         chunk_overlap = st.number_input(
-            "Chunk Overlap (in tokens)",
+            "Chunk Overlap (tokens)",
             value=200,
             min_value=0,
-            max_value=1000,
-            help="Number of tokens to overlap between chunks"
+            max_value=1000
         )
         model = st.selectbox(
             "Claude Model",
@@ -405,22 +370,59 @@ with st.expander("Processing Configuration", expanded=True):
                 "claude-3-sonnet-20240229",
                 "claude-3-opus-20240229"
             ],
-            index=0,
-            help="Select the Claude model to use for processing"
+            index=0
         )
     with col2:
         context_prompt = st.text_area(
             "Context Prompt",
-            value=PromptConfig.get_default_prompt(),
-            height=200,
-            help="Customize the prompt for context generation"
+            value="""
+    <document>
+    {doc_content}
+    </document>
+
+    Here is the chunk we want to situate within the whole document
+    <chunk>
+    {chunk_content}
+    </chunk>
+
+    Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk.
+    Answer only with the succinct context and nothing else.""",
+            height=200
         )
         force_reprocess = st.checkbox("Force Reprocess All")
-        if st.button("Reset Processing State"):
-            st.session_state.processed_urls = set()
-            save_processed_urls(st.session_state.processed_urls)
-            st.success("Processing state reset")
-            st.rerun()
+        
+with st.expander("Vector Storage Configuration", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        embedding_model = st.selectbox(
+            "Embedding Model",
+            options=["voyage-finance-2", "voyage-01", "voyage-02"],
+            index=0
+        )
+        dense_dim = st.number_input(
+            "Dense Vector Dimension",
+            value=1024
+        )
+    with col2:
+        sparse_dim = st.number_input(
+            "Sparse Vector Dimension",
+            value=768
+        )
+        use_sparse = st.checkbox(
+            "Enable Sparse Embeddings",
+            value=True
+        )
+        
+    if st.button("Initialize Qdrant Collection"):
+        with st.spinner("Initializing collection..."):
+            try:
+                st.session_state.clients['qdrant'].create_collection(
+                    dense_dim=dense_dim,
+                    sparse_dim=sparse_dim
+                )
+                st.success("✅ Qdrant collection initialized")
+            except Exception as e:
+                st.error(f"Failed to initialize collection: {str(e)}")
 
 # Main UI section
 st.title("PDF Processing Pipeline")
@@ -442,6 +444,7 @@ if st.button("Start Processing"):
             'failed_chunks': 0,
             'cache_hits': 0,
             'total_tokens': 0,
+            'stored_vectors': 0,
             'start_time': datetime.now(),
             'errors': []
         }
@@ -532,13 +535,13 @@ if st.button("Start Processing"):
                 )
             with metrics_cols[3]:
                 if st.session_state.processing_metrics['successful_chunks'] > 0:
-                    avg_chunk_tokens = (
+                    avg_tokens = (
                         st.session_state.processing_metrics['total_tokens'] / 
                         st.session_state.processing_metrics['successful_chunks']
                     )
                     st.metric(
                         "Avg Tokens/Chunk",
-                        f"{avg_chunk_tokens:.0f}"
+                        f"{avg_tokens:.0f}"
                     )
             with metrics_cols[4]:
                 elapsed = datetime.now() - st.session_state.processing_metrics['start_time']
@@ -556,7 +559,7 @@ if st.button("Start Processing"):
             - Successful chunks: {st.session_state.processing_metrics['successful_chunks']}
             - Failed chunks: {st.session_state.processing_metrics['failed_chunks']}
             - Cache hits: {st.session_state.processing_metrics['cache_hits']}
-            - Average tokens per chunk: {avg_chunk_tokens:.0f}
+            - Vectors stored: {st.session_state.processing_metrics['stored_vectors']}
             - Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}
             - Total processing time: {(datetime.now() - st.session_state.processing_metrics['start_time']).total_seconds():.1f}s
         """)
@@ -577,15 +580,56 @@ with st.expander("Current Processing State", expanded=False):
         for url in sorted(st.session_state.processed_urls):
             st.write(f"- {unquote(url.split('/')[-1])}")
             
-    # Add token statistics
+    # Add Qdrant collection info
+    try:
+        collection_info = st.session_state.clients['qdrant'].get_collection_info()
+        st.write("\nQdrant Collection Statistics:")
+        st.write(f"- Total points: {collection_info['points_count']}")
+        st.write(f"- Total vectors: {collection_info['vectors_count']}")
+        st.write(f"- Collection status: {collection_info['status']}")
+    except Exception as e:
+        st.write("\nQdrant collection not initialized yet")
+            
     if st.session_state.processing_metrics['successful_chunks'] > 0:
-        st.write("\nToken Statistics:")
-        avg_tokens = (
-            st.session_state.processing_metrics['total_tokens'] / 
-            st.session_state.processing_metrics['successful_chunks']
-        )
+        st.write("\nProcessing Statistics:")
+        avg_tokens = st.session_state.processing_metrics['total_tokens'] / st.session_state.processing_metrics['successful_chunks']
         st.write(f"- Average tokens per chunk: {avg_tokens:.0f}")
         st.write(f"- Total tokens processed: {st.session_state.processing_metrics['total_tokens']:,}")
+        st.write(f"- Total vectors stored: {st.session_state.processing_metrics['stored_vectors']}")
+        st.write(f"- Cache hits: {st.session_state.processing_metrics['cache_hits']}")
+
+# Add search interface
+with st.expander("Search Documents", expanded=False):
+    search_query = st.text_input("Enter search query")
+    search_limit = st.number_input("Number of results", min_value=1, max_value=20, value=5)
+    use_hybrid = st.checkbox("Use hybrid search (dense + sparse)", value=True)
+    
+    if st.button("Search") and search_query:
+        try:
+            # Get dense embedding for query
+            query_embedding = st.session_state.clients['embed_model'].get_text_embedding(search_query)
+            
+            # Search documents
+            results = st.session_state.clients['qdrant'].search(
+                query_text=search_query,
+                query_vector=query_embedding,
+                limit=search_limit,
+                use_sparse=use_hybrid,
+                score_threshold=0.5
+            )
+            
+            if results:
+                for i, result in enumerate(results, 1):
+                    st.markdown(f"### Result {i} (Score: {result['score']:.3f})")
+                    st.write("Context:", result['payload']['context'])
+                    with st.expander("Show full chunk"):
+                        st.write(result['payload']['chunk_text'])
+                    st.write("---")
+            else:
+                st.info("No results found")
+                
+        except Exception as e:
+            st.error(f"Error performing search: {str(e)}")
 
 # Cleanup temp directory on exit
 for file in TEMP_DIR.glob("*"):
