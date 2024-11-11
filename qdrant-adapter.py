@@ -46,30 +46,33 @@ class QdrantAdapter:
         """Create or recreate collection with specified vector dimensions."""
         try:
             # Define vector configurations
-            vectors_config = {
-                "dense": models.VectorParams(
-                    size=dense_dim,
-                    distance=models.Distance.COSINE
-                ),
-                "sparse": models.VectorParams(
-                    size=sparse_dim,
-                    distance=models.Distance.COSINE
-                )
-            }
+            dense_config = VectorParams(
+                size=dense_dim,
+                distance=Distance.COSINE,
+                on_disk=True
+            )
             
-            # Create collection
+            sparse_config = VectorParams(
+                size=sparse_dim,
+                distance=Distance.COSINE,
+                on_disk=True
+            )
+            
+            # Create collection with explicit optimizer config
             self.client.recreate_collection(
                 collection_name=self.collection_name,
-                vectors_config=vectors_config,
-                optimizers_config=models.OptimizersConfigDiff(
-                    default_segment_number=2,
-                    max_optimization_threads=2
-                )
+                vectors_config={
+                    "dense": dense_config,
+                    "sparse": sparse_config
+                },
+                optimizers_config={
+                    "max_optimization_threads": 2  # Set explicit value
+                }
             )
             
             # Create payload indices
             indices = [
-                ("timestamp", "text"),  # Changed from datetime to text
+                ("timestamp", "text"),
                 ("filename", "keyword"),
                 ("chunk_index", "integer"),
                 ("url", "keyword"),
@@ -220,14 +223,16 @@ class QdrantAdapter:
         """Get information about the current collection."""
         try:
             info = self.client.get_collection(self.collection_name)
+            if not info:
+                # Create collection if it doesn't exist
+                self.create_collection()
+                info = self.client.get_collection(self.collection_name)
+                
             return {
                 "name": info.name,
                 "vectors_count": info.vectors_count,
-                "indexed_vectors_count": info.indexed_vectors_count,
                 "points_count": info.points_count,
-                "segments_count": info.segments_count,
-                "status": info.status,
-                "payload_schema": info.payload_schema
+                "status": info.status
             }
         except Exception as e:
             logger.error(f"Error getting collection info: {str(e)}")
