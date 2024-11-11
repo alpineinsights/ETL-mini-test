@@ -23,246 +23,59 @@ import numpy as np
 from qdrant_client import QdrantClient, models
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
+from init_utils import initialize_qdrant
+from qdrant_adapter import QdrantAdapter
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-class QdrantAdapter:
-    """Handles interaction with Qdrant vector database for hybrid search."""
-    
-    def __init__(self, url: str, api_key: str, collection_name: str = "documents"):
-        """Initialize Qdrant client."""
-        try:
-            self.client = QdrantClient(url=url, api_key=api_key)
-            self.collection_name = collection_name
-            self.vectorizer = TfidfVectorizer(
-                lowercase=True,
-                strip_accents='unicode',
-                ngram_range=(1, 2),
-                max_features=768,
-                sublinear_tf=True
-            )
-            logger.info("Successfully initialized QdrantAdapter")
-        except Exception as e:
-            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
-            raise
-        
-    def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
-        """Create or recreate collection with specified vector dimensions."""
-        try:
-            # Define vector configurations
-            dense_config = models.VectorParams(
-                size=dense_dim,
-                distance=models.Distance.COSINE,
-                on_disk=True
-            )
-            sparse_config = models.VectorParams(
-                size=sparse_dim,
-                distance=models.Distance.COSINE,
-                on_disk=True
-            )
-            
-            # Create collection with both vector types
-            self.client.recreate_collection(
-                collection_name=self.collection_name,
-                vectors_config={
-                    "dense": dense_config,
-                    "sparse": sparse_config
-                }
-            )
-            
-            # Create payload indices for efficient filtering
-            indices = [
-                ("timestamp", "text"),  # Changed from datetime to text
-                ("filename", "keyword"),
-                ("chunk_index", "integer"),
-                ("url", "keyword"),  # Added URL index
-                ("source_type", "keyword")  # Added source type index
-            ]
-            
-            for field_name, field_type in indices:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name=field_name,
-                    field_schema=field_type
-                )
-            
-            logger.info(f"Created collection {self.collection_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error creating collection: {str(e)}")
-            raise
+# Must be the first Streamlit command
+st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 
-    def compute_sparse_embedding(self, text: str) -> Dict[str, List]:
-        """Compute sparse embedding using TF-IDF vectorization."""
-        try:
-            if not text or not text.strip():
-                raise ValueError("Input text cannot be empty")
-                
-            sparse_vector = self.vectorizer.fit_transform([text]).toarray()[0]
-            non_zero_indices = np.nonzero(sparse_vector)[0]
-            non_zero_values = sparse_vector[non_zero_indices]
-            
-            if len(non_zero_indices) == 0:
-                raise ValueError("No features were extracted from the text")
-                
-            return {
-                "indices": non_zero_indices.tolist(),
-                "values": non_zero_values.tolist()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error computing sparse embedding: {str(e)}")
-            raise
+# Configuration defaults
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
+DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"
+DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
 
-    def upsert_chunk(self,
-                     chunk_text: str,
-                     context_text: str,
-                     dense_embedding: List[float],
-                     metadata: Dict[str, Any],
-                     chunk_id: str) -> bool:
-        """Upsert a document chunk with both dense and sparse embeddings."""
-        try:
-            if not chunk_text or not context_text:
-                raise ValueError("Chunk text and context text cannot be empty")
-            if not dense_embedding or len(dense_embedding) == 0:
-                raise ValueError("Dense embedding cannot be empty")
-                
-            sparse_embedding = self.compute_sparse_embedding(context_text)
-            current_time = datetime.now().isoformat()
-            
-            point = models.PointStruct(
-                id=chunk_id,
-                payload={
-                    "chunk_text": chunk_text,
-                    "context": context_text,
-                    "timestamp": current_time,
-                    "vector_type": "hybrid",
-                    **metadata
-                },
-                vectors={
-                    "dense": dense_embedding,
-                    "sparse": sparse_embedding
-                }
-            )
-            
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[point],
-                wait=True
-            )
-            
-            logger.info(f"Successfully upserted chunk {chunk_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error upserting chunk {chunk_id}: {str(e)}")
-            raise
+# Initialize Qdrant client in session state
+if 'qdrant_client' not in st.session_state:
+    qdrant_client = initialize_qdrant()
+    if qdrant_client:
+        st.session_state.qdrant_client = QdrantAdapter(
+            url=st.secrets["QDRANT_URL"],
+            api_key=st.secrets["QDRANT_API_KEY"],
+            collection_name="documents"
+        )
 
-    def search(self,
-              query_text: str,
-              query_vector: List[float],
-              limit: int = 5,
-              use_sparse: bool = True,
-              score_threshold: float = 0.7,
-              filter_conditions: Optional[Dict] = None) -> List[Dict]:
-        """Perform hybrid search using dense and optionally sparse vectors."""
-        try:
-            if not query_text or not query_vector:
-                raise ValueError("Query text and vector cannot be empty")
-                
-            sparse_vector = None
-            if use_sparse:
-                sparse_embedding = self.compute_sparse_embedding(query_text)
-                sparse_vector = models.SparseVector(
-                    indices=sparse_embedding["indices"],
-                    values=sparse_embedding["values"]
-                )
-            
-            search_params = {
-                "collection_name": self.collection_name,
-                "query_vector": ("dense", query_vector),
-                "limit": limit,
-                "score_threshold": score_threshold,
-                "with_payload": True,
-                "with_vectors": False
-            }
-            
-            if sparse_vector:
-                search_params["query_vector_2"] = ("sparse", sparse_vector)
-                
-            if filter_conditions:
-                search_params["query_filter"] = models.Filter(**filter_conditions)
-            
-            results = self.client.search(**search_params)
-            
-            formatted_results = []
-            for hit in results:
-                formatted_results.append({
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload,
-                    "vector_distance": getattr(hit, "vector_distance", None)
-                })
-            
-            return formatted_results
-            
-        except Exception as e:
-            logger.error(f"Error performing search: {str(e)}")
-            raise
-    
-    def get_collection_info(self) -> Dict[str, Any]:
-        """Get information about the current collection."""
-        try:
-            info = self.client.get_collection(self.collection_name)
-            return {
-                "name": info.name,
-                "vectors_count": info.vectors_count,
-                "indexed_vectors_count": info.indexed_vectors_count,
-                "points_count": info.points_count,
-                "segments_count": info.segments_count,
-                "status": info.status,
-                "payload_schema": info.payload_schema
-            }
-        except Exception as e:
-            logger.error(f"Error getting collection info: {str(e)}")
-            raise
-    
-    def delete_collection(self) -> bool:
-        """Delete the current collection."""
-        try:
-            self.client.delete_collection(self.collection_name)
-            logger.info(f"Deleted collection {self.collection_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting collection: {str(e)}")
-            raise
-
-# Constants and initial setup
-STATE_FILE = "./.processed_urls.json"
-TEMP_DIR = Path("./.temp")
-TEMP_DIR.mkdir(exist_ok=True)
-
-def load_processed_urls():
-    """Load previously processed URLs from state file"""
+# Initialize other clients and session state
+if 'clients' not in st.session_state:
     try:
-        with open(STATE_FILE) as f:
-            return set(json.load(f))
-    except FileNotFoundError:
-        return set()
+        st.session_state.clients = {
+            'anthropic': anthropic.Client(
+                api_key=st.secrets['ANTHROPIC_API_KEY']
+            ),
+            'llama_parser': LlamaParse(
+                api_key=st.secrets['LLAMA_PARSE_API_KEY']
+            ),
+            'embed_model': VoyageEmbedding(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                voyage_api_key=st.secrets['VOYAGE_API_KEY']
+            ),
+            'qdrant': QdrantAdapter(
+                url=DEFAULT_QDRANT_URL,
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name="documents"
+            )
+        }
+    except Exception as e:
+        st.error(f"Error initializing clients: {str(e)}")
+        st.stop()
 
-def save_processed_urls(urls):
-    """Save processed URLs to state file"""
-    Path(STATE_FILE).parent.mkdir(exist_ok=True)
-    with open(STATE_FILE, 'w') as f:
-        json.dump(list(urls), f)
-
-# Initialize session state
-if 'processed_urls' not in st.session_state:
-    st.session_state.processed_urls = load_processed_urls()
-
-if 'processing_metrics' not in st.session_state:
+# Initialize session state for metrics if not exists
+def reset_metrics():
+    """Reset processing metrics to initial state"""
     st.session_state.processing_metrics = {
         'total_documents': 0,
         'processed_documents': 0,
@@ -276,37 +89,11 @@ if 'processing_metrics' not in st.session_state:
         'errors': []
     }
 
-# Initialize clients
-try:
-    client = anthropic.Client(
-        api_key=st.secrets['ANTHROPIC_API_KEY'],
-        default_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
-    )
-    llama_parser = LlamaParse(
-        api_key=st.secrets['LLAMA_PARSE_API_KEY'],
-        result_type="text"
-    )
-    embed_model = VoyageEmbedding(
-        model_name="voyage-finance-2",
-        voyage_api_key=st.secrets['VOYAGE_API_KEY']
-    )
-    qdrant_client = QdrantAdapter(
-        url=st.secrets['QDRANT_URL'],
-        api_key=st.secrets['QDRANT_API_KEY'],
-        collection_name="documents"
-    )
-    
-    # Store clients in session state
-    if 'clients' not in st.session_state:
-        st.session_state.clients = {
-            'anthropic': client,
-            'llama_parser': llama_parser,
-            'embed_model': embed_model,
-            'qdrant': qdrant_client
-        }
-except Exception as e:
-    st.error(f"Error initializing clients: {str(e)}")
-    st.stop()
+if 'processing_metrics' not in st.session_state:
+    reset_metrics()
+
+if 'processed_urls' not in st.session_state:
+    st.session_state.processed_urls = set()
 
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
@@ -319,8 +106,8 @@ def count_tokens(text: str) -> int:
 
 def create_semantic_chunks(
     text: str,
-    max_tokens: int = 1000,
-    overlap_tokens: int = 200
+    max_tokens: int = DEFAULT_CHUNK_SIZE,
+    overlap_tokens: int = DEFAULT_CHUNK_OVERLAP
 ) -> List[Dict[str, Any]]:
     """Create semantically meaningful chunks from text"""
     paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
@@ -427,11 +214,11 @@ Chunk is part of a releease of Saint Gobain Q3 2024 results emphasizing Saint Go
 def generate_context(chunk_text: str) -> str:
     """Generate contextual description for a chunk of text using Claude"""
     try:
-        message = client.messages.create(
-            model="claude-3-haiku-20240307",
+        message = st.session_state.clients['anthropic'].messages.create(
+            model=DEFAULT_LLM_MODEL,
             max_tokens=1024,
             temperature=0.0,
-            system="You are an expert at analyzing and summarizing text. Generate a detailed contextual description that captures the key information, relationships, and concepts from the provided text. Focus on creating a rich semantic representation that would be useful for retrieval.",
+            system="You are an expert at analyzing and summarizing text...",
             messages=[{
                 "role": "user",
                 "content": f"{DEFAULT_PROMPT_TEMPLATE}\n\nText to analyze:\n{chunk_text}"
@@ -467,10 +254,9 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         raise
 
 def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
-    """Process text chunks to generate context and embeddings"""
+    """Process text chunks with context generation and embedding"""
     processed_chunks = []
-    
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         try:
             # Generate context
             context = generate_context(chunk['text'])
@@ -478,28 +264,24 @@ def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
             # Generate embedding
             embedding = st.session_state.clients['embed_model'].embed_query(context)
             
-            # Create chunk metadata
-            chunk_metadata = {
-                **metadata,
-                "chunk_index": i,
-                "chunk_tokens": chunk['tokens']
-            }
-            
             # Store in Qdrant
-            chunk_id = f"{metadata['filename']}_{i}"
+            chunk_id = f"{metadata['url']}_{len(processed_chunks)}"
             st.session_state.clients['qdrant'].upsert_chunk(
+                chunk_id=chunk_id,
                 chunk_text=chunk['text'],
                 context_text=context,
                 dense_embedding=embedding,
-                metadata=chunk_metadata,
-                chunk_id=chunk_id
+                metadata={
+                    **metadata,
+                    'chunk_index': len(processed_chunks)
+                }
             )
             
             processed_chunks.append({
-                "id": chunk_id,
-                "text": chunk['text'],
-                "context": context,
-                "metadata": chunk_metadata
+                'id': chunk_id,
+                'text': chunk['text'],
+                'context': context,
+                'tokens': chunk['tokens']
             })
             
             # Update metrics
@@ -508,11 +290,10 @@ def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
             st.session_state.processing_metrics['stored_vectors'] += 1
             
         except Exception as e:
-            logger.error(f"Error processing chunk {i}: {str(e)}")
+            logger.error(f"Error processing chunk: {str(e)}")
             st.session_state.processing_metrics['failed_chunks'] += 1
             st.session_state.processing_metrics['errors'].append(str(e))
-            continue
-    
+            
     return processed_chunks
 
 def display_metrics():
@@ -546,21 +327,6 @@ def display_metrics():
         with st.expander("Processing Errors"):
             for error in metrics['errors']:
                 st.error(error)
-
-def reset_metrics():
-    """Reset processing metrics to initial state"""
-    st.session_state.processing_metrics = {
-        'total_documents': 0,
-        'processed_documents': 0,
-        'total_chunks': 0,
-        'successful_chunks': 0,
-        'failed_chunks': 0,
-        'cache_hits': 0,
-        'total_tokens': 0,
-        'stored_vectors': 0,
-        'start_time': None,
-        'errors': []
-    }
 
 def parse_sitemap(url: str = "https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml") -> List[str]:
     """Parse XML sitemap and return list of URLs."""
@@ -634,6 +400,14 @@ def process_url(url: str) -> Dict[str, Any]:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
 
+def save_processed_urls(urls: set) -> None:
+    """Save processed URLs to persistent storage"""
+    try:
+        with open('processed_urls.json', 'w') as f:
+            json.dump(list(urls), f)
+    except Exception as e:
+        logger.error(f"Error saving processed URLs: {str(e)}")
+
 # Streamlit UI
 st.title("Document Processing Pipeline")
 
@@ -666,6 +440,64 @@ with st.sidebar:
         st.write(info)
     except Exception as e:
         st.error(f"Error getting collection info: {str(e)}")
+    
+    # Configuration
+    st.header("Configuration")
+    
+    # Chunking settings
+    st.subheader("Chunking Settings")
+    chunk_size = st.number_input(
+        "Chunk Size (tokens)",
+        min_value=100,
+        max_value=2000,
+        value=DEFAULT_CHUNK_SIZE,
+        help="Maximum number of tokens per chunk"
+    )
+    
+    chunk_overlap = st.number_input(
+        "Chunk Overlap (tokens)",
+        min_value=0,
+        max_value=500,
+        value=DEFAULT_CHUNK_OVERLAP,
+        help="Number of tokens to overlap between chunks"
+    )
+    
+    # Model settings
+    st.subheader("Model Settings")
+    embedding_model = st.selectbox(
+        "Embedding Model",
+        options=["voyage-finance-2", "voyage-large-2", "voyage-code-2"],
+        index=0,
+        help="Model to use for generating embeddings"
+    )
+    
+    llm_model = st.selectbox(
+        "Context Generation Model",
+        options=[
+            "claude-3-haiku-20240307",
+            "claude-3-sonnet-20240229",
+            "claude-3-opus-20240229"
+        ],
+        index=0,
+        help="Model to use for generating context"
+    )
+    
+    # Infrastructure settings
+    st.subheader("Infrastructure")
+    qdrant_url = st.text_input(
+        "Qdrant URL",
+        value=DEFAULT_QDRANT_URL,
+        help="URL of your Qdrant instance"
+    )
+    
+    # Context prompt
+    st.subheader("Context Generation")
+    context_prompt = st.text_area(
+        "Context Prompt Template",
+        value=DEFAULT_PROMPT_TEMPLATE,
+        height=300,
+        help="Template for generating context from chunks"
+    )
 
 # Main content
 tab1, tab2 = st.tabs(["Process Content", "Search"])
