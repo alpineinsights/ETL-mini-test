@@ -11,13 +11,20 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
 from datetime import datetime
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 logger = logging.getLogger(__name__)
+
+VECTOR_DIMENSIONS = {
+    "voyage-finance-2": 1024,
+    "voyage-large-2": 1536,
+    "voyage-code-2": 1024
+}
 
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
-    def __init__(self, url: str, api_key: str, collection_name: str = "documents"):
+    def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2"):
         """
         Initialize Qdrant client.
         
@@ -25,39 +32,65 @@ class QdrantAdapter:
             url: Qdrant server URL
             api_key: API key for authentication
             collection_name: Name of the collection to use
+            embedding_model: Name of the embedding model to use
         """
         try:
-            self.client = QdrantClient(url=url, api_key=api_key)
+            self.client = QdrantClient(
+                url=url,
+                api_key=api_key,
+                timeout=60,
+                prefer_grpc=False  # Force HTTP protocol
+            )
             self.collection_name = collection_name
-            # Initialize TF-IDF vectorizer with parameters optimized for sparse embeddings
+            self.embedding_model = embedding_model
+            self.dense_dim = VECTOR_DIMENSIONS.get(embedding_model, 1024)
+            
+            # Initialize TF-IDF vectorizer
             self.vectorizer = TfidfVectorizer(
                 lowercase=True,
                 strip_accents='unicode',
                 ngram_range=(1, 2),
-                max_features=768,  # Match sparse vector dimension
-                sublinear_tf=True  # Apply sublinear scaling to term frequencies
+                max_features=768,
+                sublinear_tf=True
             )
-            logger.info("Successfully initialized QdrantAdapter")
+            
+            # Try to get collection info or create if doesn't exist
+            try:
+                info = self.client.get_collection(self.collection_name)
+                # Verify vector dimensions match
+                if info.vectors_config["dense"].size != self.dense_dim:
+                    logger.warning("Vector dimensions mismatch. Recreating collection...")
+                    self.create_collection()
+            except Exception:
+                self.create_collection()
+                
+            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
         
-    def create_collection(self, dense_dim: int = 1024, sparse_dim: int = 768) -> bool:
+    def create_collection(self, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
+            # Validate dimensions
+            if self.dense_dim <= 0 or sparse_dim <= 0:
+                raise ValueError("Vector dimensions must be positive integers")
+                
             # Define vector configurations
             vectors_config = {
                 "dense": models.VectorParams(
-                    size=dense_dim,
-                    distance=models.Distance.COSINE
+                    size=self.dense_dim,
+                    distance=models.Distance.COSINE,
+                    on_disk=True  # Store vectors on disk for better memory usage
                 ),
                 "sparse": models.VectorParams(
                     size=sparse_dim,
-                    distance=models.Distance.COSINE
+                    distance=models.Distance.COSINE,
+                    on_disk=True
                 )
             }
             
-            # Create collection with minimal configuration
+            # Create collection without optimizer config
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config
@@ -86,16 +119,13 @@ class QdrantAdapter:
             logger.error(f"Error creating collection: {str(e)}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
+    )
     def compute_sparse_embedding(self, text: str) -> Dict[str, List]:
-        """
-        Compute sparse embedding using TF-IDF vectorization.
-        
-        Args:
-            text: Input text to vectorize
-            
-        Returns:
-            Dict containing sparse vector indices and values
-        """
+        """Compute sparse embedding using TF-IDF vectorization."""
         try:
             if not text or not text.strip():
                 raise ValueError("Input text cannot be empty")
@@ -178,22 +208,31 @@ class QdrantAdapter:
               filter_conditions: Optional[Dict] = None) -> List[Dict]:
         """Perform hybrid search using dense and sparse vectors."""
         try:
+            # Validate inputs
+            if len(query_vector) != self.dense_dim:
+                raise ValueError(f"Query vector dimension ({len(query_vector)}) does not match collection ({self.dense_dim})")
+            if limit < 1:
+                raise ValueError("Limit must be positive")
+            if score_threshold < 0 or score_threshold > 1:
+                raise ValueError("Score threshold must be between 0 and 1")
+            
             # Prepare search parameters
             search_params = {
                 "collection_name": self.collection_name,
-                "query_vector": query_vector,
+                "query_vector": ("dense", query_vector),  # Specify vector name
                 "limit": limit,
                 "with_payload": True,
-                "with_vectors": False
+                "with_vectors": False,
+                "score_threshold": score_threshold
             }
             
             # Add sparse search if enabled
             if use_sparse:
                 sparse_vector = self.compute_sparse_embedding(query_text)
-                search_params["query_vector_2"] = models.SparseVector(
+                search_params["query_vector_2"] = ("sparse", models.SparseVector(
                     indices=sparse_vector["indices"],
                     values=sparse_vector["values"]
-                )
+                ))
             
             # Add filter if provided
             if filter_conditions:
@@ -215,7 +254,6 @@ class QdrantAdapter:
     def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the current collection."""
         try:
-            info = None
             try:
                 info = self.client.get_collection(self.collection_name)
             except Exception:
@@ -223,20 +261,19 @@ class QdrantAdapter:
                 self.create_collection()
                 info = self.client.get_collection(self.collection_name)
             
-            if not info:
-                return {
-                    "name": self.collection_name,
-                    "status": "unknown",
-                    "vectors_count": 0,
-                    "points_count": 0
-                }
-                
-            return {
-                "name": info.name,
-                "status": info.status,
-                "vectors_count": getattr(info, "vectors_count", 0),
-                "points_count": getattr(info, "points_count", 0)
+            # Extract only the essential information
+            collection_info = {
+                "name": getattr(info, "name", self.collection_name),
+                "status": getattr(info, "status", "unknown")
             }
+            
+            # Safely add optional fields
+            if hasattr(info, "vectors_count"):
+                collection_info["vectors_count"] = info.vectors_count
+            if hasattr(info, "points_count"):
+                collection_info["points_count"] = info.points_count
+                
+            return collection_info
             
         except Exception as e:
             logger.error(f"Error getting collection info: {str(e)}")
@@ -246,8 +283,33 @@ class QdrantAdapter:
         """Delete the current collection."""
         try:
             self.client.delete_collection(self.collection_name)
+            # Reset vectorizer
+            self.vectorizer = TfidfVectorizer(
+                lowercase=True,
+                strip_accents='unicode',
+                ngram_range=(1, 2),
+                max_features=768,
+                sublinear_tf=True
+            )
             logger.info(f"Deleted collection {self.collection_name}")
             return True
         except Exception as e:
             logger.error(f"Error deleting collection: {str(e)}")
+            raise
+
+    def update_embedding_model(self, new_model: str) -> bool:
+        """Update the embedding model and recreate collection if necessary."""
+        try:
+            new_dim = VECTOR_DIMENSIONS.get(new_model)
+            if not new_dim:
+                raise ValueError(f"Unknown embedding model: {new_model}")
+                
+            if new_dim != self.dense_dim:
+                self.embedding_model = new_model
+                self.dense_dim = new_dim
+                self.create_collection()
+                logger.info(f"Updated embedding model to {new_model} and recreated collection")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating embedding model: {str(e)}")
             raise
