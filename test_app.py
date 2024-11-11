@@ -62,6 +62,13 @@ Make sure to list:
 
 Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
 
+Example:
+Main company: Saint Gobain
+Secondary companies: none
+date : 2024.11.21
+Q3 2024, third quarter of 2024
+Chunk is part of a releease of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage. 
+
 List of company names (use exact spelling) : 
 {company_names}"""
 
