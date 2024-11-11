@@ -7,7 +7,8 @@ def initialize_qdrant():
         client = QdrantClient(
             url=st.secrets["QDRANT_URL"],
             api_key=st.secrets["QDRANT_API_KEY"],
-            timeout=60  # Add timeout for cloud deployments
+            timeout=60,  # Add timeout for cloud deployments
+            prefer_grpc=False  # Force HTTP protocol
         )
         return client
     except Exception as e:
