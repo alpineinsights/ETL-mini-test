@@ -416,6 +416,19 @@ def save_processed_urls(urls: set) -> None:
     except Exception as e:
         logger.error(f"Error saving processed URLs: {str(e)}")
 
+# Add these constants at the top of the file after the imports
+VECTOR_DIMENSIONS = {
+    "voyage-finance-2": 1024,
+    "voyage-large-2": 1536,
+    "voyage-code-2": 1024
+}
+
+DEFAULT_CONTEXT_PROMPT = """Given the following text, please provide a concise summary that captures the key points and main ideas:
+
+Text: {text}
+
+Summary:"""
+
 # Streamlit UI
 st.title("Document Processing Pipeline")
 
