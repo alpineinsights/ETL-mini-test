@@ -67,6 +67,11 @@ class QdrantAdapter:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
         
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
+    )
     def create_collection(self, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
@@ -100,32 +105,27 @@ class QdrantAdapter:
             raise
 
     @retry(
-        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(3),
         retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
     )
-    def compute_sparse_embedding(self, text: str) -> Dict[str, List]:
-        """Compute sparse embedding using TF-IDF vectorization."""
+    def compute_sparse_embedding(self, text: str) -> Dict[str, List[int]]:
+        """Compute sparse embedding using TF-IDF."""
         try:
-            if not text or not text.strip():
-                raise ValueError("Input text cannot be empty")
-                
-            # Fit and transform the text
-            sparse_vector = self.vectorizer.fit_transform([text]).toarray()[0]
+            # Fit and transform if vocabulary is empty
+            if not self.vectorizer.vocabulary_:
+                sparse_vector = self.vectorizer.fit_transform([text])
+            else:
+                sparse_vector = self.vectorizer.transform([text])
             
-            # Get non-zero elements
-            non_zero_indices = np.nonzero(sparse_vector)[0]
-            non_zero_values = sparse_vector[non_zero_indices]
+            # Convert to sparse representation
+            indices = sparse_vector.indices.tolist()
+            values = sparse_vector.data.tolist()
             
-            # Validate output
-            if len(non_zero_indices) == 0:
-                raise ValueError("No features were extracted from the text")
-                
             return {
-                "indices": non_zero_indices.tolist(),
-                "values": non_zero_values.tolist()
+                "indices": indices,
+                "values": values
             }
-            
         except Exception as e:
             logger.error(f"Error computing sparse embedding: {str(e)}")
             raise
