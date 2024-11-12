@@ -69,7 +69,8 @@ if 'qdrant_client' not in st.session_state:
                 url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
                 api_key=st.secrets["QDRANT_API_KEY"],
                 collection_name="documents",
-                embedding_model=DEFAULT_EMBEDDING_MODEL
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=st.session_state.clients['anthropic']
             )
             logger.info("Successfully initialized Qdrant client")
         else:
