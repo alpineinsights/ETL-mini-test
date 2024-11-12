@@ -118,9 +118,9 @@ try:
         api_key=st.secrets["VOYAGE_API_KEY"]
     )
     
-    # Initialize LlamaParse client
+    # Initialize LlamaParse client - Fix the API key name
     st.session_state.clients['llama_parser'] = LlamaParse(
-        api_key=st.secrets["LLAMA_CLOUD_API_KEY"]
+        api_key=st.secrets["LLAMA_PARSE_API_KEY"]  # Changed from LLAMA_CLOUD_API_KEY
     )
     
     # Initialize Qdrant client
