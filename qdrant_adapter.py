@@ -79,25 +79,25 @@ class QdrantAdapter:
     def create_collection(self, sparse_dim: int = 768) -> bool:
         """Create or recreate collection with specified vector dimensions."""
         try:
-            # Define vector configurations
+            # Define vector configurations for both dense and sparse vectors
             vectors_config = {
                 "dense": models.VectorParams(
                     size=self.dense_dim,
                     distance=models.Distance.COSINE
                 ),
                 "sparse": models.VectorParams(
-                    size=sparse_dim,
+                    size=self.sparse_dim,
                     distance=models.Distance.COSINE
                 )
             }
             
-            # Create collection with explicit optimizer config
+            # Create collection
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
                     indexing_threshold=0,
-                    max_optimization_threads=4  # Set explicit default value
+                    memmap_threshold=20000
                 )
             )
             
@@ -173,18 +173,15 @@ class QdrantAdapter:
             # Create point
             point = models.PointStruct(
                 id=chunk_id,
+                vectors={
+                    "dense": dense_embedding,
+                    "sparse": sparse_embedding
+                },
                 payload={
                     "chunk_text": chunk_text,
                     "context": context_text,
-                    "timestamp": datetime.now().isoformat(),  # Store as ISO format string
+                    "timestamp": datetime.now().isoformat(),
                     **metadata
-                },
-                vectors={
-                    "dense": dense_embedding,
-                    "sparse": models.SparseVector(
-                        indices=sparse_embedding["indices"],
-                        values=sparse_embedding["values"]
-                    )
                 }
             )
             
