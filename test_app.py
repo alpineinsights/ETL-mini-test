@@ -47,21 +47,12 @@ DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
 DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
 DEFAULT_CONTEXT_PROMPT = """Give a short succinct context to situate this chunk within the overall enclosed document broader context for the purpose of improving similarity search retrieval of the chunk. 
-
-Make sure to list:
-1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
-2. The apparent date of the document (YYYY.MM.DD)
-3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
-4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
+Provide a very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
 
 Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
 
 Example:
-Main company: Saint Gobain
-Secondary companies: none
-date : 2024.11.21
-Q3 2024, third quarter of 2024
-Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage. 
+Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operating leverage. 
 """
 
 VECTOR_DIMENSIONS = {
