@@ -108,9 +108,12 @@ class QdrantAdapter:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
         
-    def create_collection(self) -> bool:
+    def create_collection(self, collection_name: Optional[str] = None) -> bool:
         """Create or recreate collection with proper vector configuration."""
         try:
+            # Use the provided collection name or the default one
+            collection_name = collection_name or self.collection_name
+            
             # Define vector configurations for both dense and sparse vectors
             vectors_config = {
                 "dense": models.VectorParams(
@@ -125,7 +128,7 @@ class QdrantAdapter:
             
             # Create collection with optimized settings
             self.client.recreate_collection(
-                collection_name=self.collection_name,
+                collection_name=collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
                     indexing_threshold=0,
@@ -133,6 +136,10 @@ class QdrantAdapter:
                     max_optimization_threads=4
                 )
             )
+            
+            # Update the collection name if a new one was provided
+            if collection_name != self.collection_name:
+                self.collection_name = collection_name
             
             logger.info(f"Created collection {self.collection_name}")
             return True
