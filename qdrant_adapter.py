@@ -343,41 +343,71 @@ class QdrantAdapter:
             logger.error(f"Error updating embedding model: {str(e)}")
             raise
 
-    def generate_chunk_context(self, chunk_text: str, metadata: Dict[str, Any]) -> str:
-        """Generate chunk-specific context using document-level metadata."""
+    def situate_context(self, doc: str, chunk: str) -> tuple[str, Any]:
+        """Generate context using both document-level and chunk-specific information."""
         try:
-            # Use metadata for document-level information
-            company = metadata.get('company', 'Unknown Company')
-            date = metadata.get('date', 'Unknown Date')
-            fiscal_period = metadata.get('fiscal_period', 'Unknown Period')
-            
-            # Create a prompt for chunk-specific context
-            chunk_context_prompt = f"""
-            Here is a specific chunk from the document:
+            # First prompt to extract document-level information
+            doc_prompt = """
+            <document>
+            {doc_content}
+            </document>
+
+            Based on the ENTIRE document above, identify ONLY:
+            1. The main company name and any secondary companies mentioned (use EXACT spellings)
+            2. The document date (YYYY.MM.DD format)
+            3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
+
+            Answer in a structured format:
+            Company: [company name]
+            Secondary Companies: [list or none]
+            Date: [YYYY.MM.DD]
+            Fiscal Period: [periods]
+            """
+
+            # Second prompt to generate chunk-specific context
+            chunk_prompt = """
+            Using the document-level information above, create a context for this specific chunk:
             <chunk>
-            {chunk_text}
+            {chunk_content}
             </chunk>
 
-            Using the document-level information identified above, create a context giving a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
-
-            Main company: {company}
-            Date: {date}
-            Fiscal period: {fiscal_period}
-
+            Give a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
+            
             Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
             """
-            
-            # Generate the context using the prompt
-            response = st.session_state.clients['claude'].messages.create(
-                model="claude-3-sonnet-20240229",
-                max_tokens=100,
-                temperature=0,
-                messages=[{
-                    "role": "user",
-                    "content": chunk_context_prompt
-                }]
+
+            response = self.anthropic_client.beta.prompt_caching.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[
+                    {
+                        "role": "user", 
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": doc_prompt.format(doc_content=doc),
+                                "cache_control": {"type": "ephemeral"}
+                            },
+                            {
+                                "type": "text",
+                                "text": chunk_prompt.format(chunk_content=chunk),
+                            }
+                        ]
+                    }
+                ],
+                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
             )
-            return response.content
+
+            # Parse the response to combine document-level info with chunk-specific context
+            doc_info = response.content[0].text.split("\n\n")[0]  # First part contains document info
+            chunk_context = response.content[0].text.split("\n\n")[1]  # Second part contains chunk context
+            
+            # Combine both into final context
+            final_context = f"{doc_info}\n{chunk_context}"
+            
+            return final_context, response.usage
+
         except Exception as e:
-            logger.error(f"Chunk context generation failed: {str(e)}")
+            logger.error(f"Error generating context: {str(e)}")
             raise
