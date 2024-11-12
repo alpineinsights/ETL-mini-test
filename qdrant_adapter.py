@@ -20,6 +20,35 @@ VECTOR_DIMENSIONS = {
     "sparse": 768  # TF-IDF sparse vector dimension
 }
 
+DOCUMENT_CONTEXT_PROMPT = """
+<document>
+{doc_content}
+</document>
+
+Based on the ENTIRE document above, identify:
+1. The main company name and any secondary companies mentioned (use EXACT spellings)
+2. The document date (YYYY.MM.DD format)
+3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
+
+This information will be used for ALL chunks from this document.
+"""
+
+CHUNK_CONTEXT_PROMPT = """
+Here is a specific chunk from the document:
+<chunk>
+{chunk_content}
+</chunk>
+
+Using the document-level information identified above, create a context giving a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval
+
+A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
+
+Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
+
+Example:
+Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operating leverage.
+"""
+
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
@@ -75,20 +104,26 @@ class QdrantAdapter:
     def create_collection(self) -> bool:
         """Create or recreate collection with proper vector configuration."""
         try:
-            # Define vector configurations
-            vectors_config = models.VectorParams(
-                size=self.dense_dim,
-                distance=models.Distance.COSINE
-            )
+            # Define vector configurations for both dense and sparse vectors
+            vectors_config = {
+                "dense": models.VectorParams(
+                    size=self.dense_dim,
+                    distance=models.Distance.COSINE
+                ),
+                "sparse": models.VectorParams(
+                    size=self.sparse_dim,
+                    distance=models.Distance.COSINE
+                )
+            }
             
             # Create collection with optimized settings
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0,  # Immediate indexing
-                    memmap_threshold=20000,  # Memory mapping threshold
-                    max_optimization_threads=2  # Add this line to fix validation error
+                    indexing_threshold=0,
+                    memmap_threshold=20000,
+                    max_optimization_threads=4
                 )
             )
             
@@ -107,29 +142,14 @@ class QdrantAdapter:
     def compute_sparse_embedding(self, text: str) -> Dict[str, List[int]]:
         """Compute sparse embedding using TF-IDF."""
         try:
-            if not text:
-                raise ValueError("Input text cannot be empty")
-                
-            # Fit and transform if vocabulary is empty
-            try:
-                if not self.vectorizer.vocabulary_:
-                    sparse_vector = self.vectorizer.fit_transform([text])
-                else:
-                    sparse_vector = self.vectorizer.transform([text])
-            except Exception as e:
-                logger.error("Error in vectorizer, resetting and retrying")
-                self.vectorizer = TfidfVectorizer(
-                    lowercase=True,
-                    strip_accents='unicode',
-                    ngram_range=(1, 2),
-                    max_features=768,
-                    sublinear_tf=True
-                )
-                sparse_vector = self.vectorizer.fit_transform([text])
+            # Fit and transform if vectorizer is empty
+            if not self.vectorizer.vocabulary_:
+                self.vectorizer.fit([text])
             
-            # Convert to sparse representation
-            indices = sparse_vector.indices.tolist()
-            values = sparse_vector.data.tolist()
+            # Transform text to sparse vector
+            sparse_matrix = self.vectorizer.transform([text])
+            indices = sparse_matrix.indices.tolist()
+            values = sparse_matrix.data.tolist()
             
             return {
                 "indices": indices,
@@ -159,12 +179,18 @@ class QdrantAdapter:
                 raise ValueError("Dense embedding cannot be empty")
             
             # Generate UUID for point ID
-            point_id = str(uuid.uuid4())  # Convert UUID to string
+            point_id = str(uuid.uuid4())
             
-            # Create point
+            # Generate sparse embedding for the context
+            sparse_vector = self.compute_sparse_embedding(context_text)
+            
+            # Create point with both dense and sparse vectors
             point = models.PointStruct(
                 id=point_id,
-                vector=dense_embedding,
+                vector={
+                    "dense": dense_embedding,
+                    "sparse": sparse_vector
+                },
                 payload={
                     "chunk_text": chunk_text,
                     "context": context_text,
@@ -175,7 +201,7 @@ class QdrantAdapter:
             
             # Validate vector dimensions
             if len(dense_embedding) != self.dense_dim:
-                raise ValueError(f"Vector dimension mismatch. Expected {self.dense_dim}, got {len(dense_embedding)}")
+                raise ValueError(f"Dense vector dimension mismatch. Expected {self.dense_dim}, got {len(dense_embedding)}")
             
             # Upsert point
             self.client.upsert(
