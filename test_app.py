@@ -86,29 +86,32 @@ if 'qdrant_client' not in st.session_state:
     except Exception as e:
         st.error(f"Error initializing Qdrant client: {str(e)}")
 
-# Initialize session state for metrics
-if 'processing_metrics' not in st.session_state:
-    st.session_state.processing_metrics = {
-        'total_documents': 0,
-        'processed_documents': 0,
-        'total_chunks': 0,
-        'successful_chunks': 0,
-        'failed_chunks': 0,
-        'total_tokens': 0,
-        'stored_vectors': 0,
-        'cache_hits': 0,
-        'errors': [],
-        'start_time': None,
-        'stages': {
-            'parsing': {'success': 0, 'failed': 0},
-            'chunking': {'success': 0, 'failed': 0},
-            'context': {'success': 0, 'failed': 0},
-            'metadata': {'success': 0, 'failed': 0},
-            'dense_vectors': {'success': 0, 'failed': 0},
-            'sparse_vectors': {'success': 0, 'failed': 0},
-            'upserts': {'success': 0, 'failed': 0}
-        }
+# Initialize metrics structure
+metrics_template = {
+    'total_documents': 0,
+    'processed_documents': 0,
+    'total_chunks': 0,
+    'successful_chunks': 0,
+    'failed_chunks': 0,
+    'total_tokens': 0,
+    'stored_vectors': 0,
+    'cache_hits': 0,
+    'errors': [],
+    'start_time': None,
+    'stages': {
+        'parsing': {'success': 0, 'failed': 0},
+        'chunking': {'success': 0, 'failed': 0},
+        'context': {'success': 0, 'failed': 0},
+        'metadata': {'success': 0, 'failed': 0},
+        'dense_vectors': {'success': 0, 'failed': 0},
+        'sparse_vectors': {'success': 0, 'failed': 0},
+        'upserts': {'success': 0, 'failed': 0}
     }
+}
+
+# Use this template in both places:
+if 'processing_metrics' not in st.session_state:
+    st.session_state.processing_metrics = metrics_template.copy()
 
 # Initialize session state for clients if not exists
 if 'clients' not in st.session_state:
@@ -562,27 +565,7 @@ with st.sidebar:
     st.header("Controls")
     
     if st.button("Reset Metrics"):
-        st.session_state.processing_metrics = {
-            'total_documents': 0,
-            'processed_documents': 0,
-            'total_chunks': 0,
-            'successful_chunks': 0,
-            'failed_chunks': 0,
-            'total_tokens': 0,
-            'stored_vectors': 0,
-            'cache_hits': 0,
-            'errors': [],
-            'start_time': None,
-            'stages': {
-                'parsing': {'success': 0, 'failed': 0},
-                'chunking': {'success': 0, 'failed': 0},
-                'context': {'success': 0, 'failed': 0},
-                'metadata': {'success': 0, 'failed': 0},
-                'dense_vectors': {'success': 0, 'failed': 0},
-                'sparse_vectors': {'success': 0, 'failed': 0},
-                'upserts': {'success': 0, 'failed': 0}
-            }
-        }
+        st.session_state.processing_metrics = metrics_template.copy()
         st.success("Metrics reset successfully")
     
     if st.button("Delete Collection"):
