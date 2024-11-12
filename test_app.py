@@ -647,7 +647,31 @@ def save_processed_urls(urls: set) -> None:
     except Exception as e:
         logger.error(f"Error saving processed URLs: {str(e)}")
 
-# Move these before any UI code
+# Move helper functions to the top, before any initialization code
+def cleanup_temp_files():
+    """Clean up any temporary files"""
+    temp_dir = Path('.temp')
+    if temp_dir.exists():
+        try:
+            shutil.rmtree(temp_dir)
+            temp_dir.mkdir(exist_ok=True)
+        except Exception as e:
+            logger.error(f"Error cleaning temp files: {str(e)}")
+            raise
+
+def cleanup_session_state():
+    """Clean up session state and resources on app restart"""
+    try:
+        if 'clients' in st.session_state:
+            for client in st.session_state.clients.values():
+                if hasattr(client, 'close'):
+                    client.close()
+        cleanup_temp_files()
+        st.session_state.clear()
+    except Exception as e:
+        logger.error(f"Error in cleanup: {str(e)}")
+        raise
+
 def validate_environment():
     """Validate all required environment variables are set"""
     required_vars = [
@@ -656,17 +680,15 @@ def validate_environment():
         "QDRANT_URL",
         "QDRANT_API_KEY"
     ]
-    
     missing = [var for var in required_vars if not st.secrets.get(var)]
     if missing:
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-# Initialize monitoring first
+# Then initialize monitoring and session state
 if st.secrets.get("SENTRY_DSN"):
     sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
 
-# Initialize session state
 if st.runtime.exists():
     cleanup_session_state()
 
@@ -846,49 +868,6 @@ with tab2:
 st.markdown("---")
 st.markdown("Powered by Alpine")
 
-def cleanup_session_state():
-    """Clean up session state and resources on app restart"""
-    try:
-        if 'clients' in st.session_state:
-            for client in st.session_state.clients.values():
-                if hasattr(client, 'close'):
-                    client.close()
-        cleanup_temp_files()
-        st.session_state.clear()
-    except Exception as e:
-        logger.error(f"Error in cleanup: {str(e)}")
-        raise
-
-def health_check():
-    """Comprehensive health check endpoint"""
-    status = {
-        "status": "healthy",
-        "components": {}
-    }
-    try:
-        for name, client in st.session_state.clients.items():
-            try:
-                if name == 'qdrant':
-                    info = client.get_collection_info()
-                    status["components"][name] = {
-                        "status": "healthy",
-                        "collection_status": info.status
-                    }
-                else:
-                    status["components"][name] = {"status": "healthy"}
-            except Exception as e:
-                status["components"][name] = {
-                    "status": "unhealthy",
-                    "error": str(e)
-                }
-                status["status"] = "degraded"
-        return status
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
-
 def initialize_clients():
     """Initialize all required clients"""
     try:
@@ -923,14 +902,3 @@ def initialize_clients():
 # Call this before any processing
 if not initialize_clients():
     st.stop()
-
-def cleanup_temp_files():
-    """Clean up any temporary files"""
-    temp_dir = Path('.temp')
-    if temp_dir.exists():
-        try:
-            shutil.rmtree(temp_dir)
-            temp_dir.mkdir(exist_ok=True)
-        except Exception as e:
-            logger.error(f"Error cleaning temp files: {str(e)}")
-            raise  # Important to raise here as this is critical for cleanup
