@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 import uuid
+import streamlit as st
 
 logger = logging.getLogger(__name__)
 
@@ -350,4 +351,43 @@ class QdrantAdapter:
             return True
         except Exception as e:
             logger.error(f"Error updating embedding model: {str(e)}")
+            raise
+
+    def generate_chunk_context(self, chunk_text: str, metadata: Dict[str, Any]) -> str:
+        """Generate chunk-specific context using document-level metadata."""
+        try:
+            # Use metadata for document-level information
+            company = metadata.get('company', 'Unknown Company')
+            date = metadata.get('date', 'Unknown Date')
+            fiscal_period = metadata.get('fiscal_period', 'Unknown Period')
+            
+            # Create a prompt for chunk-specific context
+            chunk_context_prompt = f"""
+            Here is a specific chunk from the document:
+            <chunk>
+            {chunk_text}
+            </chunk>
+
+            Using the document-level information identified above, create a context giving a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
+
+            Main company: {company}
+            Date: {date}
+            Fiscal period: {fiscal_period}
+
+            Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
+            """
+            
+            # Generate the context using the prompt
+            response = st.session_state.clients['claude'].messages.create(
+                model="claude-3-sonnet-20240229",
+                max_tokens=100,
+                temperature=0,
+                messages=[{
+                    "role": "user",
+                    "content": chunk_context_prompt
+                }]
+            )
+            return response.content
+        except Exception as e:
+            logger.error(f"Chunk context generation failed: {str(e)}")
             raise
