@@ -83,8 +83,16 @@ class QdrantAdapter:
                 stop_words='english'
             )
             
-            # Fit vectorizer on initial empty text to initialize vocabulary
-            self.vectorizer.fit([""])  # Initialize with empty vocabulary
+            # Initialize with a minimal default vocabulary
+            default_text = [
+                "company: Acme corp",
+                "fiscal_period: Q3 2024",
+                "context: a test context to initialize the vectorizer"
+            ]
+            
+            # Fit vectorizer on default text to initialize vocabulary
+            self.vectorizer.fit(default_text)
+            logger.info("Initialized TF-IDF vectorizer with default vocabulary")
             
             # Try to get collection info or create if doesn't exist
             try:
