@@ -685,13 +685,15 @@ def validate_environment():
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-# Then initialize monitoring and session state
+# Initialize monitoring first
 if st.secrets.get("SENTRY_DSN"):
     sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
 
+# Initialize session state
 if st.runtime.exists():
     cleanup_session_state()
 
+# Validate environment and initialize clients
 validate_environment()
 if not initialize_clients():
     st.stop()
@@ -873,32 +875,36 @@ def initialize_clients():
     try:
         if 'clients' not in st.session_state:
             st.session_state.clients = {}
-            
-        # Initialize Qdrant
-        qdrant_client = initialize_qdrant()
-        if not qdrant_client:
-            st.error("Failed to initialize Qdrant client")
-            st.stop()
-        st.session_state.clients['qdrant'] = QdrantAdapter(
-            url=st.secrets["QDRANT_URL"],
-            api_key=st.secrets["QDRANT_API_KEY"],
-            embedding_model=DEFAULT_EMBEDDING_MODEL
-        )
         
-        # Initialize other clients
+        # Initialize Anthropic client first
         st.session_state.clients['anthropic'] = anthropic.Client(
             api_key=st.secrets["ANTHROPIC_API_KEY"]
         )
+        logger.info("Successfully initialized Anthropic client")
+        
+        # Initialize Voyage embedding model
         st.session_state.clients['embed_model'] = VoyageEmbedding(
             api_key=st.secrets["VOYAGE_API_KEY"],
             model_name=DEFAULT_EMBEDDING_MODEL
         )
+        logger.info("Successfully initialized Voyage embedding model")
+        
+        # Initialize Qdrant last (depends on other clients)
+        qdrant_client = initialize_qdrant()
+        if not qdrant_client:
+            raise Exception("Failed to initialize Qdrant client")
+            
+        st.session_state.clients['qdrant'] = QdrantAdapter(
+            url=st.secrets["QDRANT_URL"],
+            api_key=st.secrets["QDRANT_API_KEY"],
+            collection_name="documents",
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
+            anthropic_client=st.session_state.clients['anthropic']
+        )
+        logger.info("Successfully initialized Qdrant client")
         
         return True
+        
     except Exception as e:
-        st.error(f"Error initializing clients: {str(e)}")
+        logger.error(f"Error initializing clients: {str(e)}")
         return False
-
-# Call this before any processing
-if not initialize_clients():
-    st.stop()
