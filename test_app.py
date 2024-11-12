@@ -63,7 +63,37 @@ VECTOR_DIMENSIONS = {
 # Initialize Qdrant client in session state
 if 'qdrant_client' not in st.session_state:
     try:
-        qdrant_client = initialize_qdrant()
+        # Initialize session state variables
+        if 'clients' not in st.session_state:
+            st.session_state.clients = {}
+
+        # Initialize Anthropic client
+        if 'anthropic' not in st.session_state.clients:
+            try:
+                st.session_state.clients['anthropic'] = anthropic.Client(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"]
+                )
+                logger.info("Successfully initialized Anthropic client")
+            except Exception as e:
+                st.error(f"Error initializing Anthropic client: {str(e)}")
+
+        # Initialize Qdrant client
+        if 'qdrant_client' not in st.session_state:
+            try:
+                qdrant_client = initialize_qdrant()
+                if qdrant_client:
+                    st.session_state.clients['qdrant'] = QdrantAdapter(
+                        url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+                        api_key=st.secrets["QDRANT_API_KEY"],
+                        collection_name="documents",
+                        embedding_model=DEFAULT_EMBEDDING_MODEL,
+                        anthropic_client=st.session_state.clients.get('anthropic')
+                    )
+                    logger.info("Successfully initialized Qdrant client")
+                else:
+                    st.error("Failed to initialize Qdrant client")
+            except Exception as e:
+                st.error(f"Error initializing Qdrant client: {str(e)}")
         if qdrant_client:
             st.session_state.qdrant_client = QdrantAdapter(
                 url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
