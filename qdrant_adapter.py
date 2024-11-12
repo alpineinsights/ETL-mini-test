@@ -77,9 +77,6 @@ class QdrantAdapter:
             embedding_model: Name of the embedding model to use
             anthropic_client: Initialized Anthropic client for context generation
         """
-        if embedding_model not in ["voyage-finance-2", "voyage-large-3"]:
-            raise ValueError("embedding_model must be one of: voyage-finance-2, voyage-large-3")
-        
         try:
             self.client = QdrantClient(
                 url=url,
@@ -130,13 +127,16 @@ class QdrantAdapter:
         try:
             collection_name = collection_name or self.collection_name
             
-            # Check if collection exists and is healthy
+            # Check if collection exists
             try:
                 info = self.client.get_collection(collection_name)
                 if info.status != "green":
-                    if not self.recover_collection():
-                        raise Exception(f"Failed to recover collection {collection_name}")
-                return True
+                    logger.warning(f"Collection {collection_name} exists but status is {info.status}")
+                    if self.recover_collection():
+                        return True
+                    logger.warning("Recovery failed, recreating collection")
+                else:
+                    return True  # Collection exists and is healthy
             except Exception as e:
                 if "not found" not in str(e).lower():
                     raise
