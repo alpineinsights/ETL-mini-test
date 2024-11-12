@@ -504,48 +504,16 @@ def display_metrics():
     
     if metrics['start_time']:
         elapsed_time = datetime.now() - metrics['start_time']
-        st.write(f"Processing time: {elapsed_time}")
+        st.metric("Elapsed Time", f"{elapsed_time.seconds} seconds")
     
-    col1, col2, col3 = st.columns(3)
-    
+    col1, col2 = st.columns(2)
     with col1:
-        st.metric("Documents Processed", 
-                 f"{metrics['processed_documents']}/{metrics['total_documents']}")
+        st.metric("Documents Processed", f"{metrics['processed_docs']}/{metrics['total_docs']}")
     with col2:
-        st.metric("Successful Chunks", metrics['successful_chunks'])
-    with col3:
-        st.metric("Failed Chunks", metrics['failed_chunks'])
+        st.metric("Chunks Processed", f"{metrics['processed_chunks']}/{metrics['total_chunks']}")
     
-    col4, col5, col6 = st.columns(3)
-    
-    with col4:
-        st.metric("Total Tokens", metrics['total_tokens'])
-    with col5:
-        st.metric("Stored Vectors", metrics['stored_vectors'])
-    with col6:
-        st.metric("Cache Hits", metrics['cache_hits'])
-    
-    if metrics['errors']:
-        with st.expander("Processing Errors"):
-            for error in metrics['errors']:
-                st.error(error)
-    
-    # Add processing stages breakdown
-    st.subheader("Processing Stages")
-    stages_data = []
-    for stage, counts in metrics['stages'].items():
-        total = counts['success'] + counts['failed']
-        if total > 0:
-            success_rate = (counts['success'] / total) * 100
-            stages_data.append({
-                'Stage': stage.replace('_', ' ').title(),
-                'Success': counts['success'],
-                'Failed': counts['failed'],
-                'Success Rate': f"{success_rate:.1f}%"
-            })
-    
-    if stages_data:
-        st.dataframe(stages_data)
+    if metrics['errors'] > 0:
+        st.error(f"Errors encountered: {metrics['errors']}")
 
 def parse_sitemap(url: str) -> List[str]:
     """Parse XML sitemap and return list of URLs."""
@@ -722,14 +690,41 @@ def validate_environment():
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-# Remove the duplicate initialize_clients function from the bottom of the file
+# Near the top of the file, after imports
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'processing_metrics' not in st.session_state:
+        st.session_state.processing_metrics = {
+            'start_time': None,
+            'total_docs': 0,  # Changed from total_documents to match display_metrics
+            'processed_docs': 0,
+            'total_chunks': 0,
+            'processed_chunks': 0,
+            'errors': 0
+        }
+    if 'processed_urls' not in st.session_state:
+        st.session_state.processed_urls = set()
+    if 'collection_name' not in st.session_state:
+        st.session_state.collection_name = "documents"
 
-# Then continue with the rest of your initialization code
-if st.secrets.get("SENTRY_DSN"):
-    sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
+# In the sitemap processing code
+if st.button("Process Sitemap"):
+    try:
+        with st.spinner("Parsing sitemap..."):
+            urls = parse_sitemap(sitemap_url)
+            if not urls:
+                st.warning("No URLs found to process")
+                st.stop()
+            
+            st.session_state.processing_metrics['total_docs'] = len(urls)  # Changed from total_documents
+            st.session_state.processing_metrics['start_time'] = datetime.now()
+            
+            # Rest of the processing code...
 
+# After validate_environment() call
 if st.runtime.exists():
     cleanup_session_state()
+    initialize_session_state()
 
 validate_environment()
 if not initialize_clients():
@@ -848,7 +843,7 @@ with tab1:
                     st.warning("No URLs found to process")
                     st.stop()
                 
-                st.session_state.processing_metrics['total_documents'] = len(urls)
+                st.session_state.processing_metrics['total_docs'] = len(urls)
                 st.session_state.processing_metrics['start_time'] = datetime.now()
                 
                 # Create progress bar
@@ -885,20 +880,22 @@ with tab2:
                 limit=5
             )
             
-            # Display results
-            for i, result in enumerate(results, 1):
-                with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
-                    st.write("**Original Text:**")
-                    st.write(result['payload']['chunk_text'])
-                    st.write("**Context:**")
-                    st.write(result['payload']['context'])
-                    st.write("**Metadata:**")
-                    # Display only specified metadata fields
-                    display_metadata = {
-                        k: result['payload'].get(k, "") 
-                        for k in ["company", "date", "fiscal_period", "creation_date", "file_name", "url"]
-                    }
-                    st.json(display_metadata)
+            if not results:
+                st.info("No matching documents found.")
+            else:
+                # Display results
+                for i, result in enumerate(results, 1):
+                    with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
+                        st.write("**Original Text:**")
+                        st.write(result['payload']['chunk_text'])
+                        st.write("**Context:**")
+                        st.write(result['payload']['context'])
+                        st.write("**Metadata:**")
+                        display_metadata = {
+                            k: result['payload'].get(k, "") 
+                            for k in ["company", "date", "fiscal_period", "creation_date", "file_name", "url"]
+                        }
+                        st.json(display_metadata)
             
         except Exception as e:
             st.error(f"Error performing search: {str(e)}")
