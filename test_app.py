@@ -696,7 +696,7 @@ def initialize_session_state():
     if 'processing_metrics' not in st.session_state:
         st.session_state.processing_metrics = {
             'start_time': None,
-            'total_docs': 0,  # Changed from total_documents to match display_metrics
+            'total_docs': 0,
             'processed_docs': 0,
             'total_chunks': 0,
             'processed_chunks': 0,
