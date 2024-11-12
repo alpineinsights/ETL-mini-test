@@ -66,7 +66,7 @@ Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gob
 
 VECTOR_DIMENSIONS = {
     "voyage-finance-2": 1024,
-    "voyage-large-2": 1536,
+    "voyage-3": 1024,
     "voyage-code-2": 1024
 }
 
@@ -401,35 +401,72 @@ def parse_sitemap(url: str) -> List[str]:
 def process_url(url: str) -> Dict[str, Any]:
     """Process a single URL and extract text content."""
     try:
-        # Download and parse PDF
-        documents = st.session_state.clients['llama_parser'].load_data(url)
+        logger.info(f"Downloading and parsing PDF from {url}")
         
+        # First check if the file exists and is accessible
+        response = requests.head(url, timeout=30)
+        if response.status_code != 200:
+            raise ValueError(f"URL not accessible (status code {response.status_code}): {url}")
+            
+        # Download and parse PDF with detailed logging
+        try:
+            documents = st.session_state.clients['llama_parser'].load_data(url)
+            logger.info(f"Successfully parsed document from {url}")
+        except Exception as e:
+            logger.error(f"LlamaParse error for {url}: {str(e)}")
+            raise ValueError(f"Failed to parse PDF: {str(e)}")
+        
+        # Handle empty response
+        if not documents:
+            raise ValueError(f"LlamaParse returned empty response for {url}")
+            
         # Handle the case where documents is a list
         if isinstance(documents, list):
-            if not documents:
-                raise ValueError(f"No content extracted from {url}")
             document = documents[0]  # Take the first document
         else:
             document = documents
             
-        # Extract metadata
+        # Extract and validate text content
+        text = ""
+        if hasattr(document, "text"):
+            text = document.text
+        elif isinstance(document, dict):
+            text = document.get("text", "")
+            
+        if not text or len(text.strip()) < 100:  # Minimum content validation
+            raise ValueError(f"Insufficient text content extracted from {url}")
+            
+        # Extract metadata with fallbacks
         metadata = {
             "url": url,
-            "title": getattr(document, "metadata", {}).get("title", ""),
-            "author": getattr(document, "metadata", {}).get("author", ""),
-            "date": getattr(document, "metadata", {}).get("date", ""),
+            "title": "",
+            "author": "",
+            "date": "",
             "processed_at": datetime.now().isoformat()
         }
         
-        # Extract text content
-        text = getattr(document, "text", "") or document.get("text", "")
-        if not text:
-            raise ValueError(f"No text content extracted from {url}")
+        # Try to get metadata from different possible locations
+        if hasattr(document, "metadata"):
+            doc_metadata = document.metadata
+        elif isinstance(document, dict):
+            doc_metadata = document.get("metadata", {})
+        else:
+            doc_metadata = {}
             
+        # Update metadata if available
+        if doc_metadata:
+            metadata.update({
+                "title": doc_metadata.get("title", ""),
+                "author": doc_metadata.get("author", ""),
+                "date": doc_metadata.get("date", "")
+            })
+            
+        logger.info(f"Successfully processed {url} - Text length: {len(text)}")
         return {
             "text": text,
             "metadata": metadata
         }
+        
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
