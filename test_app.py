@@ -44,9 +44,9 @@ st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
-DEFAULT_QDRANT_URL = "https://qdrant.your-domain.com"  # Update this with your actual Qdrant URL
+DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
-DEFAULT_CONTEXT_PROMPT = """Give a short succinct context to situate this chunk within the overall enclosed document boader context for the purpose of improving similarity search retrieval of the chunk. 
+DEFAULT_CONTEXT_PROMPT = """Give a short succinct context to situate this chunk within the overall enclosed document broader context for the purpose of improving similarity search retrieval of the chunk. 
 
 Make sure to list:
 1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
@@ -66,8 +66,7 @@ Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gob
 
 VECTOR_DIMENSIONS = {
     "voyage-finance-2": 1024,
-    "voyage-3": 1024,
-    "voyage-code-2": 1024
+    "voyage-3": 1024
 }
 
 # Initialize Qdrant client in session state
@@ -401,74 +400,84 @@ def parse_sitemap(url: str) -> List[str]:
 def process_url(url: str) -> Dict[str, Any]:
     """Process a single URL and extract text content."""
     try:
-        logger.info(f"Downloading and parsing PDF from {url}")
+        logger.info(f"Starting to process URL: {url}")
         
         # First check if the file exists and is accessible
+        logger.info(f"Checking URL accessibility: {url}")
         response = requests.head(url, timeout=30)
         if response.status_code != 200:
+            logger.error(f"URL not accessible: {url} (status: {response.status_code})")
             raise ValueError(f"URL not accessible (status code {response.status_code}): {url}")
             
-        # Download and parse PDF with detailed logging
+        # Download PDF to temporary file
+        temp_dir = tempfile.mkdtemp()
+        logger.info(f"Created temporary directory: {temp_dir}")
+        
         try:
-            documents = st.session_state.clients['llama_parser'].load_data(url)
-            logger.info(f"Successfully parsed document from {url}")
-        except Exception as e:
-            logger.error(f"LlamaParse error for {url}: {str(e)}")
-            raise ValueError(f"Failed to parse PDF: {str(e)}")
-        
-        # Handle empty response
-        if not documents:
-            raise ValueError(f"LlamaParse returned empty response for {url}")
+            # Download file
+            logger.info(f"Downloading PDF from: {url}")
+            pdf_response = requests.get(url, timeout=60)
+            pdf_response.raise_for_status()
             
-        # Handle the case where documents is a list
-        if isinstance(documents, list):
-            document = documents[0]  # Take the first document
-        else:
-            document = documents
+            # Save to temporary file
+            filename = url.split('/')[-1]
+            temp_path = os.path.join(temp_dir, filename)
+            logger.info(f"Saving PDF to: {temp_path}")
             
-        # Extract and validate text content
-        text = ""
-        if hasattr(document, "text"):
-            text = document.text
-        elif isinstance(document, dict):
-            text = document.get("text", "")
+            with open(temp_path, 'wb') as f:
+                f.write(pdf_response.content)
             
-        if not text or len(text.strip()) < 100:  # Minimum content validation
-            raise ValueError(f"Insufficient text content extracted from {url}")
+            logger.info(f"PDF size: {len(pdf_response.content)} bytes")
             
-        # Extract metadata with fallbacks
-        metadata = {
-            "url": url,
-            "title": "",
-            "author": "",
-            "date": "",
-            "processed_at": datetime.now().isoformat()
-        }
-        
-        # Try to get metadata from different possible locations
-        if hasattr(document, "metadata"):
-            doc_metadata = document.metadata
-        elif isinstance(document, dict):
-            doc_metadata = document.get("metadata", {})
-        else:
-            doc_metadata = {}
+            # Initialize LlamaParse with specific settings
+            logger.info("Initializing LlamaParse")
+            parser = LlamaParse(
+                api_key=st.secrets["LLAMA_PARSE_API_KEY"],
+                result_type="markdown",
+                language="en",
+                verbose=True,
+                num_workers=4,
+                disable_ocr=False,
+                skip_diagonal_text=True,
+                check_interval=2  # Check status more frequently
+            )
             
-        # Update metadata if available
-        if doc_metadata:
-            metadata.update({
-                "title": doc_metadata.get("title", ""),
-                "author": doc_metadata.get("author", ""),
-                "date": doc_metadata.get("date", "")
-            })
+            # Process the PDF directly with LlamaParse
+            logger.info(f"Processing PDF with LlamaParse: {temp_path}")
+            documents = parser.load_data(temp_path)
             
-        logger.info(f"Successfully processed {url} - Text length: {len(text)}")
-        return {
-            "text": text,
-            "metadata": metadata
-        }
-        
+            if not documents:
+                logger.error(f"LlamaParse returned no documents for: {url}")
+                raise ValueError(f"No content extracted from {url}")
+            
+            logger.info(f"Successfully extracted {len(documents)} documents")
+            
+            # Get the first document
+            document = documents[0]
+            
+            # Extract metadata
+            metadata = {
+                "url": url,
+                "title": getattr(document, "metadata", {}).get("title", filename),
+                "author": getattr(document, "metadata", {}).get("author", ""),
+                "date": getattr(document, "metadata", {}).get("date", ""),
+                "processed_at": datetime.now().isoformat()
+            }
+            
+            logger.info(f"Successfully processed URL: {url}")
+            return {
+                "text": document.text,
+                "metadata": metadata
+            }
+            
+        finally:
+            # Clean up temporary directory
+            logger.info(f"Cleaning up temporary directory: {temp_dir}")
+            shutil.rmtree(temp_dir)
+            
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
+        st.error(f"Failed to process {url}: {str(e)}")
         raise
 
 def save_processed_urls(urls: set) -> None:
@@ -687,4 +696,4 @@ with tab2:
 
 # Footer
 st.markdown("---")
-st.markdown("Built with Streamlit, Claude, Voyage AI, and Qdrant")
+st.markdown("Powered by Alpine")
