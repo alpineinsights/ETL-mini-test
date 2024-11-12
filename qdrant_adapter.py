@@ -12,6 +12,7 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 import uuid
 import streamlit as st
+from ratelimit import limits, sleep_and_retry
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,18 @@ Answer only with the succinct context, and nothing else (no introduction, no con
 Example:
 Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operating leverage.
 """
+
+# Configure rate limits
+CALLS_PER_MINUTE = {
+    'anthropic': 50,
+    'voyage': 100,
+    'qdrant': 100
+}
+
+@sleep_and_retry
+@limits(calls=CALLS_PER_MINUTE['anthropic'], period=60)
+def rate_limited_context(func, *args, **kwargs):
+    return func(*args, **kwargs)
 
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
@@ -117,16 +130,18 @@ class QdrantAdapter:
         try:
             collection_name = collection_name or self.collection_name
             
-            # Check if collection exists first
+            # Check if collection exists and is healthy
             try:
-                self.client.get_collection(collection_name)
-                logger.info(f"Collection {collection_name} already exists")
+                info = self.client.get_collection(collection_name)
+                if info.status != "green":
+                    if not self.recover_collection():
+                        raise Exception(f"Failed to recover collection {collection_name}")
                 return True
             except Exception as e:
                 if "not found" not in str(e).lower():
                     raise
 
-            # Only create if it doesn't exist
+            # Create collection with optimized settings
             vectors_config = {
                 "dense": models.VectorParams(
                     size=self.dense_dim,
@@ -138,20 +153,17 @@ class QdrantAdapter:
                 )
             }
             
-            self.client.create_collection(  # Use create_collection instead of recreate_collection
+            self.client.create_collection(
                 collection_name=collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0,
-                    memmap_threshold=20000,
+                    indexing_threshold=0,  # Immediate indexing
+                    memmap_threshold=20000,  # Better memory management
                     max_optimization_threads=4
                 )
             )
             
-            if collection_name != self.collection_name:
-                self.collection_name = collection_name
-            
-            logger.info(f"Created new collection {self.collection_name}")
+            logger.info(f"Created new collection {collection_name}")
             return True
             
         except Exception as e:
@@ -355,59 +367,16 @@ class QdrantAdapter:
 
     def situate_context(self, doc: str, chunk: str) -> tuple[str, Any]:
         """Generate context using both document-level and chunk-specific information."""
+        return rate_limited_context(self._situate_context, doc, chunk)
+
+    def recover_collection(self) -> bool:
+        """Attempt to recover collection if in a bad state"""
         try:
-            # First prompt to extract document-level information with caching
-            doc_response = self.anthropic_client.beta.prompt_caching.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=1000,
-                temperature=0.0,
-                messages=[{
-                    "role": "user", 
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""<document>
-                            {doc}
-                            </document>
-
-                            Based on the ENTIRE document above, identify ONLY:
-                            1. The main company name and any secondary companies mentioned (use EXACT spellings)
-                            2. The document date (YYYY.MM.DD format)
-                            3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
-
-                            Answer in a structured format:
-                            Company: [company name]
-                            Secondary Companies: [list or none]
-                            Date: [YYYY.MM.DD]
-                            Fiscal Period: [periods]""",
-                            "cache_control": {"type": "ephemeral"}  # Cache the document analysis
-                        },
-                        {
-                            "type": "text",
-                            "text": f"""Using the document-level information above, create a context for this specific chunk:
-                            <chunk>
-                            {chunk}
-                            </chunk>
-
-                            Give a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
-                            
-                            Answer only with the succinct context, and nothing else."""
-                        }
-                    ]
-                }],
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
-            )
-
-            # Extract usage statistics
-            usage = {
-                "input_tokens": doc_response.usage.input_tokens,
-                "output_tokens": doc_response.usage.output_tokens,
-                "cache_creation_tokens": getattr(doc_response.usage, 'cache_creation_input_tokens', 0),
-                "cache_read_tokens": getattr(doc_response.usage, 'cache_read_input_tokens', 0)
-            }
-
-            return doc_response.content[0].text.strip(), usage
-
+            info = self.client.get_collection(self.collection_name)
+            if info.status != "green":
+                logger.warning(f"Collection {self.collection_name} in {info.status} state, attempting recovery")
+                self.client.recover_collection(self.collection_name)
+                return True
         except Exception as e:
-            logger.error(f"Error generating context: {str(e)}")
-            raise
+            logger.error(f"Error recovering collection: {str(e)}")
+        return False
