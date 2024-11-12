@@ -116,11 +116,25 @@ class QdrantAdapter:
     def compute_sparse_embedding(self, text: str) -> Dict[str, List[int]]:
         """Compute sparse embedding using TF-IDF."""
         try:
+            if not text:
+                raise ValueError("Input text cannot be empty")
+                
             # Fit and transform if vocabulary is empty
-            if not self.vectorizer.vocabulary_:
+            try:
+                if not self.vectorizer.vocabulary_:
+                    sparse_vector = self.vectorizer.fit_transform([text])
+                else:
+                    sparse_vector = self.vectorizer.transform([text])
+            except Exception as e:
+                logger.error("Error in vectorizer, resetting and retrying")
+                self.vectorizer = TfidfVectorizer(
+                    lowercase=True,
+                    strip_accents='unicode',
+                    ngram_range=(1, 2),
+                    max_features=768,
+                    sublinear_tf=True
+                )
                 sparse_vector = self.vectorizer.fit_transform([text])
-            else:
-                sparse_vector = self.vectorizer.transform([text])
             
             # Convert to sparse representation
             indices = sparse_vector.indices.tolist()
@@ -250,6 +264,8 @@ class QdrantAdapter:
         try:
             try:
                 info = self.client.get_collection(self.collection_name)
+                if getattr(info, "status", "unknown") != "green":
+                    logger.warning(f"Collection status is {getattr(info, 'status', 'unknown')}")
             except Exception:
                 # Collection doesn't exist, create it
                 self.create_collection()
