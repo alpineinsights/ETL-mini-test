@@ -318,17 +318,21 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         # Combine text from all documents
         combined_text = "\n\n".join(doc.text for doc in documents)
         
-        # Get metadata from first document (usually contains file-level metadata)
+        # Create chunks from combined text
+        chunks = create_semantic_chunks(combined_text)
+        
+        # Get metadata from first document
         metadata = {
             "filename": filename,
             "title": documents[0].metadata.get("title", ""),
             "author": documents[0].metadata.get("author", ""),
             "creation_date": documents[0].metadata.get("creation_date", ""),
-            "page_count": len(documents)  # Use actual number of pages
+            "page_count": len(documents)
         }
         
         return {
             "text": combined_text,
+            "chunks": chunks,  # Add chunks to return dictionary
             "metadata": metadata
         }
     except Exception as e:
@@ -466,8 +470,13 @@ def parse_sitemap(url: str) -> List[str]:
         st.error(f"Unexpected error while processing sitemap: {str(e)}")
         raise
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(lambda e: not isinstance(e, (ValueError, KeyboardInterrupt)))
+)
 def process_url(url: str) -> Dict[str, Any]:
-    """Process a single URL and extract text content."""
+    temp_file_path = None
     try:
         logger.info(f"Starting to process URL: {url}")
         
@@ -477,37 +486,30 @@ def process_url(url: str) -> Dict[str, Any]:
         
         # Create temporary file
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file_path = temp_file.name
             temp_file.write(response.content)
-            file_path = temp_file.name
             
             # Process PDF and get chunks
-            result = process_pdf(file_path, Path(url).name)
+            result = process_pdf(temp_file_path, Path(url).name)
             
             # Extract metadata from full document text
             doc_metadata = extract_document_metadata(result['text'])
             
-            # Combine with file metadata
-            metadata = {
-                **doc_metadata,
-                'creation_date': datetime.now().isoformat(),
-                'file_name': Path(url).name,
-                'url': url
-            }
+            # Update result metadata
+            result['metadata'].update(doc_metadata)
+            result['metadata']['url'] = url
             
-            # Process chunks with combined metadata
-            processed_chunks = process_chunks(result['chunks'], metadata)
-            
-            return {
-                'chunks': processed_chunks,
-                'metadata': metadata
-            }
+            return result
             
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
     finally:
-        if 'file_path' in locals():
-            os.unlink(file_path)
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temporary file {temp_file_path}: {e}")
 
 def save_processed_urls(urls: set) -> None:
     """Save processed URLs to persistent storage"""
