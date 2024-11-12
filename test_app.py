@@ -577,8 +577,8 @@ with st.sidebar:
     
     if st.button("Create Collection"):
         try:
-            st.session_state.clients['qdrant'].create_collection()
-            st.success("Collection created successfully")
+            st.session_state.clients['qdrant'].create_collection(st.session_state.collection_name)
+            st.success(f"Collection '{st.session_state.collection_name}' created successfully")
         except Exception as e:
             st.error(f"Error creating collection: {str(e)}")
     
