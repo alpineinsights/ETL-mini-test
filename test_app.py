@@ -343,13 +343,17 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         logger.error(f"Error processing PDF {filename}: {str(e)}")
         raise
 
-def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
+    """Process chunks while maintaining document-level context"""
     processed_chunks = []
     for chunk in chunks:
         try:
-            # Generate context
+            # Generate context using both document and chunk-level information
             try:
-                context = generate_context(chunk['text'])
+                context = st.session_state.clients['qdrant'].situate_context(
+                    doc=full_document,
+                    chunk=chunk['text']
+                )[0]  # Get just the context, ignore usage stats
                 st.session_state.processing_metrics['stages']['context']['success'] += 1
             except Exception as e:
                 logger.error(f"Context generation failed: {e}")
@@ -687,7 +691,11 @@ with tab1:
                         st.session_state.processing_metrics['total_chunks'] += len(chunks)
                         
                         # Process chunks
-                        processed_chunks = process_chunks(chunks, result['metadata'])
+                        processed_chunks = process_chunks(
+                            chunks=chunks,
+                            metadata=result['metadata'],
+                            full_document=result['text']  # Pass the full document text
+                        )
                         
                         # Update metrics
                         st.session_state.processing_metrics['processed_documents'] += 1
