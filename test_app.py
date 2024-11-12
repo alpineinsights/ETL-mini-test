@@ -154,59 +154,41 @@ metrics_template = {
     }
 }
 
-# Use this template in both places:
-if 'processing_metrics' not in st.session_state:
-    st.session_state.processing_metrics = metrics_template.copy()
-
-# Initialize session state for clients if not exists
-if 'clients' not in st.session_state:
-    st.session_state.clients = {}
-
-# Initialize collection name if not exists
-if 'collection_name' not in st.session_state:
-    st.session_state.collection_name = "documents"
-
+# Initialize application
 try:
-    # Initialize Anthropic client first
-    if 'anthropic' not in st.session_state.clients:
-        st.session_state.clients['anthropic'] = anthropic.Client(
-            api_key=st.secrets["ANTHROPIC_API_KEY"]
-        )
-        logger.info("Successfully initialized Anthropic client")
+    # Initialize Sentry if configured
+    if st.secrets.get("SENTRY_DSN"):
+        sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
 
-    # Initialize Voyage embedding model
-    if 'embed_model' not in st.session_state.clients:
-        st.session_state.clients['embed_model'] = VoyageEmbedding(
-            api_key=st.secrets["VOYAGE_API_KEY"],
-            model_name=DEFAULT_EMBEDDING_MODEL
-        )
-        logger.info("Successfully initialized Voyage embedding model")
+    # Initialize session state
+    if st.runtime.exists():
+        cleanup_session_state()
+        initialize_session_state()
 
-    # Initialize Llama parser
-    if 'llama_parser' not in st.session_state.clients:
-        st.session_state.clients['llama_parser'] = LlamaParse(
-            api_key=st.secrets["LLAMA_PARSE_API_KEY"]
-        )
-        logger.info("Successfully initialized Llama parser")
+    # Validate environment and initialize clients
+    validate_environment()
+    if not initialize_clients():
+        st.stop()
 
-    # Initialize Qdrant client last (since it depends on other clients)
-    if 'qdrant' not in st.session_state.clients:
-        qdrant_client = initialize_qdrant()
-        if qdrant_client:
-            st.session_state.clients['qdrant'] = QdrantAdapter(
-                url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-                api_key=st.secrets["QDRANT_API_KEY"],
-                collection_name=st.session_state.collection_name,
-                embedding_model=DEFAULT_EMBEDDING_MODEL,
-                anthropic_client=st.session_state.clients['anthropic']  # Pass the initialized Anthropic client
-            )
-            logger.info("Successfully initialized Qdrant client")
-        else:
-            raise Exception("Failed to initialize Qdrant client")
+    # Start UI code
+    st.title("Document Processing Pipeline")
 
-    logger.info("Successfully initialized all clients")
+    # Sidebar controls
+    with st.sidebar:
+        st.header("Controls")
+        if st.button("Reset Metrics"):
+            st.session_state.processing_metrics = metrics_template.copy()
+            st.success("Metrics reset successfully")
+        
+        if st.button("Delete Collection"):
+            try:
+                st.session_state.clients['qdrant'].delete_collection()
+                st.success("Collection deleted successfully")
+            except Exception as e:
+                st.error(f"Error deleting collection: {str(e)}")
+
 except Exception as e:
-    st.error(f"Error initializing clients: {str(e)}")
+    st.error(f"Error during initialization: {str(e)}")
     st.stop()
 
 if 'processed_urls' not in st.session_state:
