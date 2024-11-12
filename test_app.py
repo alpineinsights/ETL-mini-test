@@ -101,28 +101,42 @@ if 'processing_metrics' not in st.session_state:
         'start_time': None
     }
 
-# Initialize clients in session state
+# Initialize session state for clients if not exists
 if 'clients' not in st.session_state:
-    try:
-        st.session_state.clients = {
-            'llama_parser': LlamaParse(
-                api_key=st.secrets['LLAMA_PARSE_API_KEY'],
-                verbose=True
-            ),
-            'embed_model': VoyageEmbedding(
-                model_name="voyage-finance-2",
-                voyage_api_key=st.secrets['VOYAGE_API_KEY']
-            ),
-            'qdrant': QdrantAdapter(
-                url=st.secrets['QDRANT_URL'],
-                api_key=st.secrets['QDRANT_API_KEY'],
-                embedding_model="voyage-finance-2"
-            )
-        }
-        logger.info("Successfully initialized all clients")
-    except Exception as e:
-        st.error(f"Error initializing clients: {str(e)}")
-        st.stop()
+    st.session_state.clients = {}
+
+# Initialize clients
+try:
+    # Initialize Anthropic client
+    st.session_state.clients['anthropic'] = anthropic.Client(
+        api_key=st.secrets["ANTHROPIC_API_KEY"]
+    )
+    
+    # Initialize Voyage client
+    st.session_state.clients['embed_model'] = VoyageEmbedding(
+        model_name=DEFAULT_EMBEDDING_MODEL,
+        api_key=st.secrets["VOYAGE_API_KEY"]
+    )
+    
+    # Initialize LlamaParse client
+    st.session_state.clients['llama_parser'] = LlamaParse(
+        api_key=st.secrets["LLAMA_CLOUD_API_KEY"]
+    )
+    
+    # Initialize Qdrant client
+    qdrant_client = initialize_qdrant()
+    if qdrant_client:
+        st.session_state.clients['qdrant'] = QdrantAdapter(
+            url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+            api_key=st.secrets["QDRANT_API_KEY"],
+            collection_name="documents",
+            embedding_model=DEFAULT_EMBEDDING_MODEL
+        )
+    
+    logger.info("Successfully initialized all clients")
+except Exception as e:
+    st.error(f"Error initializing clients: {str(e)}")
+    st.stop()
 
 if 'processed_urls' not in st.session_state:
     st.session_state.processed_urls = set()
@@ -247,17 +261,20 @@ def generate_context(chunk_text: str) -> str:
 def extract_document_metadata(text: str) -> Dict[str, str]:
     """Extract key metadata fields from document using Claude."""
     try:
-        response = st.session_state.clients['claude'].messages.create(
+        response = st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
             messages=[{
                 "role": "user", 
-                "content": """Extract only these fields from the document:
+                "content": f"""Extract only these fields from the document:
 - company: The main company name
 - date: The document date (in YYYY.MM.DD format)
 - fiscal_period: The fiscal period mentioned (both abbreviated and verbose, e.g. 'Q1 2024, first quarter 2024')
 
-Return only a JSON object with these three fields."""
+Return only a JSON object with these three fields.
+
+Text to process:
+{text}"""
             }]
         )
         return json.loads(response.content[0].text)
@@ -301,7 +318,7 @@ def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Li
     for chunk in chunks:
         try:
             # Generate context using the detailed prompt
-            context = st.session_state.clients['claude'].messages.create(
+            context = st.session_state.clients['anthropic'].messages.create(
                 model=DEFAULT_LLM_MODEL,
                 max_tokens=300,
                 messages=[{
