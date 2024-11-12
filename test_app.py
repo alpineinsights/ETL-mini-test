@@ -253,19 +253,19 @@ def create_semantic_chunks(
 def generate_context(chunk_text: str) -> str:
     """Generate contextual description for a chunk of text using Claude"""
     try:
-        message = st.session_state.clients['anthropic'].messages.create(
+        # Create message using the correct API format
+        response = st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
-            max_tokens=1024,
-            temperature=0.0,
-            system="You are an expert at analyzing and summarizing text...",
+            max_tokens=300,
             messages=[{
                 "role": "user",
-                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to analyze:\n{chunk_text}"
+                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to process:\n{chunk_text}"
             }]
         )
-        return message.content
+        return response.content[0].text  # Access the response content correctly
     except Exception as e:
         logger.error(f"Error generating context: {str(e)}")
+        st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
 
 def extract_document_metadata(text: str) -> Dict[str, str]:
@@ -351,15 +351,11 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
 
 def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
     processed_chunks = []
-    
-    for i, chunk in enumerate(chunks):
+    for chunk in chunks:
         try:
-            status_text = f"Processing chunk {i+1}/{len(chunks)}"
-            logger.info(status_text)
-            
             # Generate context
             try:
-                context = st.session_state.clients['anthropic'].messages.create(...)
+                context = generate_context(chunk['text'])
                 st.session_state.processing_metrics['stages']['context']['success'] += 1
             except Exception as e:
                 logger.error(f"Context generation failed: {e}")
@@ -377,7 +373,7 @@ def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Li
 
             # Store in Qdrant
             try:
-                chunk_id = f"{metadata.get('file_name', 'unknown')}_{i}"
+                chunk_id = f"{metadata.get('file_name', 'unknown')}_{chunks.index(chunk)}"
                 success = st.session_state.clients['qdrant'].upsert_chunk(
                     chunk_text=chunk['text'],
                     context_text=context,
@@ -399,15 +395,14 @@ def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Li
                 'dense_vector': dense_vector,
                 **metadata
             })
-            
             st.session_state.processing_metrics['successful_chunks'] += 1
-            
+
         except Exception as e:
             logger.error(f"Error processing chunk: {str(e)}")
             st.session_state.processing_metrics['failed_chunks'] += 1
             st.session_state.processing_metrics['errors'].append(str(e))
             continue
-    
+
     return processed_chunks
 
 def display_metrics():
