@@ -264,33 +264,43 @@ def extract_document_metadata(text: str) -> Dict[str, str]:
         response = st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
-            temperature=0,  # Add this for more consistent JSON output
+            temperature=0,
+            system="You are a precise JSON generator. You only output valid JSON objects, nothing else.",
             messages=[{
                 "role": "user", 
-                "content": f"""Extract only these fields from the document:
-- company: The main company name
-- date: The document date (in YYYY.MM.DD format)
-- fiscal_period: The fiscal period mentioned (both abbreviated and verbose, e.g. 'Q1 2024, first quarter 2024')
+                "content": f"""Extract exactly these three fields from the text and return them in a JSON object:
+1. company: The main company name
+2. date: The document date in YYYY.MM.DD format
+3. fiscal_period: The fiscal period mentioned (both abbreviated and verbose form)
 
-Return ONLY a valid JSON object with these three fields, nothing else.
-Example:
+Return ONLY a JSON object like this example, with no other text:
 {{"company": "Adidas AG", "date": "2024.04.30", "fiscal_period": "Q1 2024, first quarter 2024"}}
 
-Text to process:
-{text}"""
+Text to analyze:
+{text[:2000]}  # Limit text length to avoid token issues
+"""
             }]
         )
-        # Get the text content from the response
+
+        # Get response and clean it
         json_str = response.content[0].text.strip()
-        # Parse the JSON string
-        metadata = json.loads(json_str)
         
+        # Remove any markdown code block markers if present
+        json_str = json_str.replace('```json', '').replace('```', '').strip()
+        
+        # Parse JSON
+        try:
+            metadata = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from Claude: {json_str}")
+            raise ValueError(f"Failed to parse JSON from Claude response: {e}")
+
         # Validate required fields
         required_fields = ["company", "date", "fiscal_period"]
-        for field in required_fields:
-            if field not in metadata:
-                raise ValueError(f"Missing required field: {field}")
-                
+        missing_fields = [field for field in required_fields if field not in metadata]
+        if missing_fields:
+            raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+
         return metadata
     except Exception as e:
         logger.error(f"Error extracting metadata: {str(e)}")
