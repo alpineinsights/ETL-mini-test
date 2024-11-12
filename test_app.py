@@ -264,6 +264,7 @@ def extract_document_metadata(text: str) -> Dict[str, str]:
         response = st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
+            temperature=0,  # Add this for more consistent JSON output
             messages=[{
                 "role": "user", 
                 "content": f"""Extract only these fields from the document:
@@ -271,13 +272,26 @@ def extract_document_metadata(text: str) -> Dict[str, str]:
 - date: The document date (in YYYY.MM.DD format)
 - fiscal_period: The fiscal period mentioned (both abbreviated and verbose, e.g. 'Q1 2024, first quarter 2024')
 
-Return only a JSON object with these three fields.
+Return ONLY a valid JSON object with these three fields, nothing else.
+Example:
+{{"company": "Adidas AG", "date": "2024.04.30", "fiscal_period": "Q1 2024, first quarter 2024"}}
 
 Text to process:
 {text}"""
             }]
         )
-        return json.loads(response.content[0].text)
+        # Get the text content from the response
+        json_str = response.content[0].text.strip()
+        # Parse the JSON string
+        metadata = json.loads(json_str)
+        
+        # Validate required fields
+        required_fields = ["company", "date", "fiscal_period"]
+        for field in required_fields:
+            if field not in metadata:
+                raise ValueError(f"Missing required field: {field}")
+                
+        return metadata
     except Exception as e:
         logger.error(f"Error extracting metadata: {str(e)}")
         raise
