@@ -25,6 +25,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
 import sys
 from pathlib import Path
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 # Add the current directory to Python path
 current_dir = Path(__file__).parent.absolute()
@@ -41,8 +44,8 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
 # Configuration defaults
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_CHUNK_SIZE = 500
+DEFAULT_CHUNK_OVERLAP = 100
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
 DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
@@ -387,65 +390,116 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         logger.error(f"Error processing PDF {filename}: {str(e)}")
         raise
 
-def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks while maintaining document-level context"""
+async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
+    """Process chunks concurrently while maintaining document-level context"""
     processed_chunks = []
-    for chunk in chunks:
+    
+    # Create tasks for all chunks
+    async def process_single_chunk(chunk):
         try:
-            # Generate context using both document and chunk-level information
-            try:
-                context = st.session_state.clients['qdrant'].situate_context(
-                    doc=full_document,
-                    chunk=chunk['text']
-                )[0]  # Get just the context, ignore usage stats
-                st.session_state.processing_metrics['stages']['context']['success'] += 1
-            except Exception as e:
-                logger.error(f"Context generation failed: {e}")
-                st.session_state.processing_metrics['stages']['context']['failed'] += 1
-                continue
+            # Generate context
+            context = await asyncio.to_thread(
+                st.session_state.clients['qdrant'].situate_context,
+                doc=full_document,
+                chunk=chunk['text']
+            )
+            context = context[0]  # Get just the context
+            st.session_state.processing_metrics['stages']['context']['success'] += 1
 
-            # Generate dense embedding
-            try:
-                dense_vector = st.session_state.clients['embed_model'].get_text_embedding(chunk['text'])
-                st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-            except Exception as e:
-                logger.error(f"Dense embedding failed: {e}")
-                st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
-                continue
+            # Generate embedding
+            dense_vector = await asyncio.to_thread(
+                st.session_state.clients['embed_model'].get_text_embedding,
+                chunk['text']
+            )
+            st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
 
             # Store in Qdrant
-            try:
-                chunk_id = f"{metadata.get('file_name', 'unknown')}_{chunks.index(chunk)}"
-                success = st.session_state.clients['qdrant'].upsert_chunk(
-                    chunk_text=chunk['text'],
-                    context_text=context,
-                    dense_embedding=dense_vector,
-                    metadata=metadata,
-                    chunk_id=chunk_id
-                )
-                if success:
-                    st.session_state.processing_metrics['stages']['upserts']['success'] += 1
-                    st.session_state.processing_metrics['stored_vectors'] += 1
-            except Exception as e:
-                logger.error(f"Vector storage failed: {e}")
-                st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
-                continue
-
-            processed_chunks.append({
-                'chunk_text': chunk['text'],
-                'context': context,
-                'dense_vector': dense_vector,
-                **metadata
-            })
-            st.session_state.processing_metrics['successful_chunks'] += 1
-
+            chunk_id = f"{metadata.get('file_name', 'unknown')}_{chunks.index(chunk)}"
+            success = await asyncio.to_thread(
+                st.session_state.clients['qdrant'].upsert_chunk,
+                chunk_text=chunk['text'],
+                context_text=context,
+                dense_embedding=dense_vector,
+                metadata=metadata,
+                chunk_id=chunk_id
+            )
+            
+            if success:
+                st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                st.session_state.processing_metrics['stored_vectors'] += 1
+                
+                return {
+                    'chunk_text': chunk['text'],
+                    'context': context,
+                    'dense_vector': dense_vector,
+                    **metadata
+                }
+                
         except Exception as e:
             logger.error(f"Error processing chunk: {str(e)}")
             st.session_state.processing_metrics['failed_chunks'] += 1
             st.session_state.processing_metrics['errors'].append(str(e))
-            continue
+            return None
 
+    # Process chunks concurrently with a limit
+    chunk_tasks = [process_single_chunk(chunk) for chunk in chunks]
+    results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+    
+    # Filter out None results (failed chunks)
+    processed_chunks = [r for r in results if r is not None]
+    st.session_state.processing_metrics['successful_chunks'] += len(processed_chunks)
+    
     return processed_chunks
+
+async def process_urls_async(urls: List[str]):
+    """Process multiple URLs concurrently"""
+    async def process_single_url(url, i, total):
+        try:
+            # Check if URL was already processed
+            if url in st.session_state.processed_urls:
+                st.session_state.processing_metrics['cache_hits'] += 1
+                return None
+
+            # Process URL content
+            result = await asyncio.to_thread(process_url, url)
+            
+            # Create chunks
+            chunks = await asyncio.to_thread(create_semantic_chunks, result['text'])
+            st.session_state.processing_metrics['total_chunks'] += len(chunks)
+            
+            # Process chunks concurrently
+            processed_chunks = await process_chunks_async(
+                chunks=chunks,
+                metadata=result['metadata'],
+                full_document=result['text']
+            )
+            
+            # Update metrics
+            st.session_state.processing_metrics['processed_documents'] += 1
+            st.session_state.processed_urls.add(url)
+            
+            return processed_chunks
+            
+        except Exception as e:
+            logger.error(f"Error processing {url}: {str(e)}")
+            st.session_state.processing_metrics['errors'].append(str(e))
+            return None
+
+    # Process URLs concurrently with a reasonable limit
+    tasks = []
+    chunk_size = 5  # Process 5 URLs at a time
+    for i in range(0, len(urls), chunk_size):
+        url_batch = urls[i:i + chunk_size]
+        batch_tasks = [
+            process_single_url(url, i + j, len(urls)) 
+            for j, url in enumerate(url_batch)
+        ]
+        results = await asyncio.gather(*batch_tasks)
+        tasks.extend([r for r in results if r is not None])
+        
+        # Update progress
+        progress = min((i + chunk_size) / len(urls), 1.0)
+        progress_bar.progress(progress)
 
 def display_metrics():
     """Display current processing metrics"""
@@ -668,17 +722,17 @@ with st.sidebar:
     chunk_size = st.number_input(
         "Chunk Size",
         min_value=100,
-        max_value=2000,
+        max_value=1000,
         value=DEFAULT_CHUNK_SIZE,
-        help="Number of tokens per chunk"
+        help="Number of tokens per chunk (default: 500)"
     )
     
     chunk_overlap = st.number_input(
         "Chunk Overlap",
         min_value=0,
-        max_value=500,
+        max_value=200,
         value=DEFAULT_CHUNK_OVERLAP,
-        help="Number of overlapping tokens between chunks"
+        help="Number of overlapping tokens between chunks (default: 100)"
     )
     
     # Context prompt
@@ -704,13 +758,11 @@ with tab1:
     if st.button("Process Sitemap"):
         try:
             with st.spinner("Parsing sitemap..."):
-                # Parse sitemap
                 urls = parse_sitemap(sitemap_url)
-                
                 if not urls:
                     st.warning("No URLs found to process")
                     st.stop()
-                    
+                
                 st.session_state.processing_metrics['total_documents'] = len(urls)
                 st.session_state.processing_metrics['start_time'] = datetime.now()
                 
@@ -718,40 +770,8 @@ with tab1:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                for i, url in enumerate(urls):
-                    try:
-                        status_text.text(f"Processing URL {i+1}/{len(urls)}: {url}")
-                        
-                        # Check if URL was already processed
-                        if url in st.session_state.processed_urls:
-                            st.session_state.processing_metrics['cache_hits'] += 1
-                            continue
-                        
-                        # Process URL content
-                        result = process_url(url)
-                        
-                        # Create chunks
-                        chunks = create_semantic_chunks(result['text'])
-                        st.session_state.processing_metrics['total_chunks'] += len(chunks)
-                        
-                        # Process chunks
-                        processed_chunks = process_chunks(
-                            chunks=chunks,
-                            metadata=result['metadata'],
-                            full_document=result['text']  # Pass the full document text
-                        )
-                        
-                        # Update metrics
-                        st.session_state.processing_metrics['processed_documents'] += 1
-                        st.session_state.processed_urls.add(url)
-                        
-                        # Update progress
-                        progress_bar.progress((i + 1) / len(urls))
-                        
-                    except Exception as e:
-                        st.error(f"Error processing {url}: {str(e)}")
-                        st.session_state.processing_metrics['errors'].append(str(e))
-                        continue
+                # Run async processing
+                asyncio.run(process_urls_async(urls))
                 
                 save_processed_urls(st.session_state.processed_urls)
                 st.success("Processing complete!")
