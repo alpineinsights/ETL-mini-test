@@ -71,33 +71,22 @@ class QdrantAdapter:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
         
-    @retry(
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
-    )
-    def create_collection(self, sparse_dim: int = 768) -> bool:
-        """Create or recreate collection with specified vector dimensions."""
+    def create_collection(self) -> bool:
+        """Create or recreate collection with proper vector configuration."""
         try:
-            # Define vector configurations for both dense and sparse vectors
-            vectors_config = {
-                "dense": models.VectorParams(
-                    size=self.dense_dim,
-                    distance=models.Distance.COSINE
-                ),
-                "sparse": models.VectorParams(
-                    size=self.sparse_dim,
-                    distance=models.Distance.COSINE
-                )
-            }
+            # Define vector configurations
+            vectors_config = models.VectorParams(
+                size=self.dense_dim,
+                distance=models.Distance.COSINE
+            )
             
-            # Create collection
+            # Create collection with optimized settings
             self.client.recreate_collection(
                 collection_name=self.collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0,
-                    memmap_threshold=20000
+                    indexing_threshold=0,  # Immediate indexing
+                    memmap_threshold=20000  # Memory mapping threshold
                 )
             )
             
@@ -167,16 +156,10 @@ class QdrantAdapter:
             if not dense_embedding or len(dense_embedding) == 0:
                 raise ValueError("Dense embedding cannot be empty")
                 
-            # Compute sparse embedding from context
-            sparse_embedding = self.compute_sparse_embedding(context_text)
-            
             # Create point
             point = models.PointStruct(
                 id=chunk_id,
-                vectors={
-                    "dense": dense_embedding,
-                    "sparse": sparse_embedding
-                },
+                vector=dense_embedding,  # Changed from vectors to vector
                 payload={
                     "chunk_text": chunk_text,
                     "context": context_text,
@@ -259,32 +242,21 @@ class QdrantAdapter:
     def get_collection_info(self) -> Dict[str, Any]:
         """Get information about the current collection."""
         try:
-            try:
-                info = self.client.get_collection(self.collection_name)
-                if getattr(info, "status", "unknown") != "green":
-                    logger.warning(f"Collection status is {getattr(info, 'status', 'unknown')}")
-            except Exception:
-                # Collection doesn't exist, create it
-                self.create_collection()
-                info = self.client.get_collection(self.collection_name)
-            
-            # Extract only the essential information
-            collection_info = {
-                "name": getattr(info, "name", self.collection_name),
-                "status": getattr(info, "status", "unknown")
+            info = self.client.get_collection(self.collection_name)
+            return {
+                "name": self.collection_name,
+                "status": getattr(info, "status", "unknown"),
+                "vectors_count": getattr(info, "vectors_count", 0),
+                "points_count": getattr(info, "points_count", 0),
+                "vector_size": self.dense_dim
             }
-            
-            # Safely add optional fields
-            if hasattr(info, "vectors_count"):
-                collection_info["vectors_count"] = info.vectors_count
-            if hasattr(info, "points_count"):
-                collection_info["points_count"] = info.points_count
-                
-            return collection_info
-            
         except Exception as e:
             logger.error(f"Error getting collection info: {str(e)}")
-            raise
+            return {
+                "name": self.collection_name,
+                "status": "error",
+                "error": str(e)
+            }
     
     def delete_collection(self) -> bool:
         """Delete the current collection."""
