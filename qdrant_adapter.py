@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 VECTOR_DIMENSIONS = {
     "voyage-finance-2": 1024,
-    "voyage-large-2": 1536,
-    "voyage-code-2": 1024
+    "voyage-large-3": 4096,
+    "sparse": 768  # TF-IDF sparse vector dimension
 }
 
 class QdrantAdapter:
@@ -32,10 +32,8 @@ class QdrantAdapter:
             collection_name: Name of the collection to use
             embedding_model: Name of the embedding model to use
         """
-        if not collection_name or not isinstance(collection_name, str):
-            raise ValueError("Collection name must be a non-empty string")
-        if embedding_model not in VECTOR_DIMENSIONS:
-            raise ValueError(f"Unsupported embedding model: {embedding_model}")
+        if embedding_model not in ["voyage-finance-2", "voyage-large-3"]:
+            raise ValueError("embedding_model must be one of: voyage-finance-2, voyage-large-3")
         
         try:
             self.client = QdrantClient(
@@ -46,7 +44,8 @@ class QdrantAdapter:
             )
             self.collection_name = collection_name
             self.embedding_model = embedding_model
-            self.dense_dim = VECTOR_DIMENSIONS.get(embedding_model, 1024)
+            self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
+            self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
             
             # Initialize TF-IDF vectorizer
             self.vectorizer = TfidfVectorizer(
