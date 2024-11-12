@@ -76,37 +76,20 @@ class QdrantAdapter:
             self.collection_name = collection_name
             self.embedding_model = embedding_model
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
-            self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
+            self.sparse_dim = 100  # Reduced dimension for TF-IDF
             
-            # Initialize TF-IDF vectorizer with fixed vocabulary size and additional settings
+            # Initialize TF-IDF vectorizer with reduced vocabulary size
             self.vectorizer = TfidfVectorizer(
                 max_features=self.sparse_dim,
-                min_df=1,  # Include terms that appear in at least 1 document
-                max_df=0.95,  # Exclude terms that appear in >95% of documents
-                stop_words='english',
-                ngram_range=(1, 2),  # Include both unigrams and bigrams
-                binary=False,  # Use term frequency instead of binary occurrence
-                norm='l2',  # L2 normalization of vectors
-                use_idf=True,  # Enable inverse document frequency weighting
-                smooth_idf=True,  # Add 1 to document frequencies to prevent division by zero
-                sublinear_tf=True  # Apply sublinear scaling to term frequencies
+                stop_words='english'
             )
             
-            # Initialize with a comprehensive financial vocabulary
+            # Fit vectorizer on a sample text to initialize vocabulary
             default_text = [
                 "company financial report earnings revenue profit loss quarter year fiscal",
-                "business market growth strategy development product service customer sales",
-                "investment risk management operation technology innovation digital data",
-                "balance sheet income statement cash flow assets liabilities equity capital",
-                "quarterly annual report guidance forecast outlook performance metric",
-                "merger acquisition partnership joint venture subsidiary corporation",
-                "dividend stock share price market value trading volume investor shareholder",
-                "regulatory compliance audit governance risk management internal control",
-                "operational efficiency cost reduction margin improvement productivity",
-                "research development innovation product launch market expansion global"
+                "business market growth strategy development product service customer sales"
             ]
             
-            # Fit vectorizer on default text to initialize vocabulary
             self.vectorizer.fit(default_text)
             logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
             
