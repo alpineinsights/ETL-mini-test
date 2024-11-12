@@ -115,7 +115,8 @@ try:
     # Initialize Voyage client
     st.session_state.clients['embed_model'] = VoyageEmbedding(
         model_name=DEFAULT_EMBEDDING_MODEL,
-        api_key=st.secrets["VOYAGE_API_KEY"]
+        api_key=st.secrets["VOYAGE_API_KEY"],
+        embed_batch_size=10  # Optional: adjust based on your needs
     )
     
     # Initialize LlamaParse client - Fix the API key name
@@ -367,7 +368,7 @@ Text to process:
             ).content[0].text
             
             # Generate dense embedding for chunk content
-            dense_vector = st.session_state.clients['embed_model'].embed_query(chunk['text'])
+            dense_vector = st.session_state.clients['embed_model'].embed_text(chunk['text'])
             
             processed_chunks.append({
                 'chunk_text': chunk['text'],
@@ -701,7 +702,7 @@ with tab2:
     if query:
         try:
             # Generate query embedding
-            query_embedding = st.session_state.clients['embed_model'].embed_query(query)
+            query_embedding = st.session_state.clients['embed_model'].embed_text(query)
             
             # Search
             results = st.session_state.clients['qdrant'].search(
