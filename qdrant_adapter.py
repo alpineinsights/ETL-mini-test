@@ -77,14 +77,14 @@ class QdrantAdapter:
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
             self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
             
-            # Initialize TF-IDF vectorizer
+            # Initialize TF-IDF vectorizer with fixed vocabulary size
             self.vectorizer = TfidfVectorizer(
-                lowercase=True,
-                strip_accents='unicode',
-                ngram_range=(1, 2),
-                max_features=768,
-                sublinear_tf=True
+                max_features=self.sparse_dim,
+                stop_words='english'
             )
+            
+            # Fit vectorizer on initial empty text to initialize vocabulary
+            self.vectorizer.fit([""])  # Initialize with empty vocabulary
             
             # Try to get collection info or create if doesn't exist
             try:
@@ -139,22 +139,21 @@ class QdrantAdapter:
         stop=stop_after_attempt(3),
         retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
     )
-    def compute_sparse_embedding(self, text: str) -> Dict[str, List[int]]:
+    def compute_sparse_embedding(self, text: str) -> List[float]:
         """Compute sparse embedding using TF-IDF."""
         try:
-            # Fit and transform if vectorizer is empty
-            if not self.vectorizer.vocabulary_:
-                self.vectorizer.fit([text])
-            
             # Transform text to sparse vector
             sparse_matrix = self.vectorizer.transform([text])
-            indices = sparse_matrix.indices.tolist()
-            values = sparse_matrix.data.tolist()
             
-            return {
-                "indices": indices,
-                "values": values
-            }
+            # Convert sparse matrix to dense array and flatten
+            dense_array = sparse_matrix.toarray().flatten()
+            
+            # Ensure vector dimension matches expected size
+            if len(dense_array) != self.sparse_dim:
+                raise ValueError(f"Sparse vector dimension mismatch. Expected {self.sparse_dim}, got {len(dense_array)}")
+            
+            return dense_array.tolist()
+            
         except Exception as e:
             logger.error(f"Error computing sparse embedding: {str(e)}")
             raise
@@ -253,8 +252,8 @@ class QdrantAdapter:
             if use_sparse:
                 sparse_vector = self.compute_sparse_embedding(query_text)
                 search_params["query_vector_2"] = ("sparse", models.SparseVector(
-                    indices=sparse_vector["indices"],
-                    values=sparse_vector["values"]
+                    indices=[],
+                    values=sparse_vector
                 ))
             
             # Add filter if provided
@@ -299,12 +298,11 @@ class QdrantAdapter:
             self.client.delete_collection(self.collection_name)
             # Reset vectorizer
             self.vectorizer = TfidfVectorizer(
-                lowercase=True,
-                strip_accents='unicode',
-                ngram_range=(1, 2),
-                max_features=768,
-                sublinear_tf=True
+                max_features=self.sparse_dim,
+                stop_words='english'
             )
+            # Fit vectorizer on initial empty text to initialize vocabulary
+            self.vectorizer.fit([""])  # Initialize with empty vocabulary
             logger.info(f"Deleted collection {self.collection_name}")
             return True
         except Exception as e:
