@@ -38,7 +38,7 @@ from qdrant_adapter import QdrantAdapter, VECTOR_DIMENSIONS
 logger = logging.getLogger(__name__)
 
 # Must be the first Streamlit command
-st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
+st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
 # Configuration defaults
 DEFAULT_CHUNK_SIZE = 1000
@@ -245,33 +245,25 @@ def generate_context(chunk_text: str) -> str:
         raise
 
 def extract_document_metadata(text: str) -> Dict[str, str]:
-    """Extract metadata from document text using Claude."""
+    """Extract key metadata fields from document using Claude."""
     try:
-        prompt = """Extract the following information from the document:
-- company: The company name
-- date: The report/transcript date (in YYYY-MM-DD format)
-- fiscal_period: The fiscal period (e.g., Q1 2024, FY 2023)
-
-Format the response as a JSON object with these exact keys. If any information is not found, use an empty string."""
-
         response = st.session_state.clients['claude'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
-            messages=[
-                {"role": "user", "content": f"{prompt}\n\nDocument text:\n{text[:2000]}"}
-            ]
+            messages=[{
+                "role": "user", 
+                "content": """Extract only these fields from the document:
+- company: The main company name
+- date: The document date (in YYYY.MM.DD format)
+- fiscal_period: The fiscal period mentioned (both abbreviated and verbose, e.g. 'Q1 2024, first quarter 2024')
+
+Return only a JSON object with these three fields."""
+            }]
         )
-        
-        metadata = json.loads(response.content[0].text)
-        return metadata
-        
+        return json.loads(response.content[0].text)
     except Exception as e:
         logger.error(f"Error extracting metadata: {str(e)}")
-        return {
-            "company": "",
-            "date": "",
-            "fiscal_period": ""
-        }
+        raise
 
 def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
     """Process a PDF file and return extracted text and metadata"""
@@ -297,49 +289,52 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         logger.error(f"Error processing PDF {filename}: {str(e)}")
         raise
 
-def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
-    """Process text chunks with context generation and embedding"""
+def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Process chunks to add context and embeddings."""
     processed_chunks = []
+    
     for chunk in chunks:
         try:
-            # Generate embeddings
-            dense_embedding = st.session_state.clients['embed_model'].embed_text(
-                chunk['text']  # Use embed_text instead of embed_query
-            )
+            # Generate context using the detailed prompt
+            context = st.session_state.clients['claude'].messages.create(
+                model=DEFAULT_LLM_MODEL,
+                max_tokens=300,
+                messages=[{
+                    "role": "user", 
+                    "content": f"""Give a short succinct context to situate this chunk within the overall enclosed document broader context for the purpose of improving similarity search retrieval of the chunk. 
+
+Make sure to list:
+1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
+2. The apparent date of the document (YYYY.MM.DD)
+3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
+4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
+
+Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
+
+Text to process:
+{chunk['text']}"""
+                }]
+            ).content[0].text
             
-            # Generate context
-            context = generate_context(chunk['text'])
-            
-            # Store in Qdrant
-            chunk_id = f"{metadata['url']}_{len(processed_chunks)}"
-            st.session_state.clients['qdrant'].upsert_chunk(
-                chunk_id=chunk_id,
-                chunk_text=chunk['text'],
-                context_text=context,
-                dense_embedding=dense_embedding,
-                metadata={
-                    **metadata,
-                    'chunk_index': len(processed_chunks)
-                }
-            )
+            # Generate dense embedding for chunk content
+            dense_vector = st.session_state.clients['embed_model'].embed_query(chunk['text'])
             
             processed_chunks.append({
-                'id': chunk_id,
-                'text': chunk['text'],
+                'chunk_text': chunk['text'],
                 'context': context,
-                'tokens': chunk['tokens']
+                'dense_vector': dense_vector,
+                **metadata
             })
             
             # Update metrics
             st.session_state.processing_metrics['successful_chunks'] += 1
-            st.session_state.processing_metrics['total_tokens'] += chunk['tokens']
-            st.session_state.processing_metrics['stored_vectors'] += 1
             
         except Exception as e:
             logger.error(f"Error processing chunk: {str(e)}")
             st.session_state.processing_metrics['failed_chunks'] += 1
             st.session_state.processing_metrics['errors'].append(str(e))
-            
+            continue
+    
     return processed_chunks
 
 def display_metrics():
@@ -434,45 +429,39 @@ def process_url(url: str) -> Dict[str, Any]:
         response = requests.get(url, timeout=60)
         response.raise_for_status()
         
-        # Create temporary file with .pdf extension
+        # Create temporary file
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             temp_file.write(response.content)
-            temp_path = temp_file.name
-        
-        try:
-            # Process with LlamaParse
-            documents = st.session_state.clients['llama_parser'].load_data(temp_path)
+            file_path = temp_file.name
             
-            if not documents:
-                raise ValueError(f"No content extracted from {url}")
+            # Process PDF and get chunks
+            result = process_pdf(file_path, Path(url).name)
             
-            document = documents[0] if isinstance(documents, list) else documents
-            
-            # Extract metadata using Claude
-            llm_metadata = extract_document_metadata(document.text)
+            # Extract metadata from full document text
+            doc_metadata = extract_document_metadata(result['text'])
             
             # Combine with file metadata
             metadata = {
-                "company": llm_metadata.get("company", ""),
-                "date": llm_metadata.get("date", ""),
-                "fiscal_period": llm_metadata.get("fiscal_period", ""),
-                "creation_date": datetime.now().isoformat(),
-                "file_name": url.split('/')[-1],
-                "url": url
+                **doc_metadata,
+                'creation_date': datetime.now().isoformat(),
+                'file_name': Path(url).name,
+                'url': url
             }
+            
+            # Process chunks with combined metadata
+            processed_chunks = process_chunks(result['chunks'], metadata)
             
             return {
-                "text": document.text,
-                "metadata": metadata
+                'chunks': processed_chunks,
+                'metadata': metadata
             }
-            
-        finally:
-            # Clean up temporary file
-            os.unlink(temp_path)
             
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
+    finally:
+        if 'file_path' in locals():
+            os.unlink(file_path)
 
 def save_processed_urls(urls: set) -> None:
     """Save processed URLs to persistent storage"""
