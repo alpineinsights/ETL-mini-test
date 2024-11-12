@@ -95,28 +95,38 @@ class QdrantAdapter:
             self.vectorizer.fit(default_text)
             logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
             
-            # Try to get collection info or create if doesn't exist
+            # More careful collection initialization
             try:
                 info = self.client.get_collection(self.collection_name)
-                # Verify vector dimensions match
-                if info.config.params["dense"].size != self.dense_dim:
-                    logger.warning("Vector dimensions mismatch. Recreating collection...")
+                # Only check if collection exists, don't recreate
+                logger.info(f"Found existing collection: {self.collection_name}")
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    logger.info(f"Collection {self.collection_name} not found, creating...")
                     self.create_collection()
-            except Exception:
-                self.create_collection()
-                
+                else:
+                    raise
+            
             logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
         
     def create_collection(self, collection_name: Optional[str] = None) -> bool:
-        """Create or recreate collection with proper vector configuration."""
+        """Create collection if it doesn't exist."""
         try:
-            # Use the provided collection name or the default one
             collection_name = collection_name or self.collection_name
             
-            # Define vector configurations for both dense and sparse vectors
+            # Check if collection exists first
+            try:
+                self.client.get_collection(collection_name)
+                logger.info(f"Collection {collection_name} already exists")
+                return True
+            except Exception as e:
+                if "not found" not in str(e).lower():
+                    raise
+
+            # Only create if it doesn't exist
             vectors_config = {
                 "dense": models.VectorParams(
                     size=self.dense_dim,
@@ -128,8 +138,7 @@ class QdrantAdapter:
                 )
             }
             
-            # Create collection with optimized settings
-            self.client.recreate_collection(
+            self.client.create_collection(  # Use create_collection instead of recreate_collection
                 collection_name=collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
@@ -139,11 +148,10 @@ class QdrantAdapter:
                 )
             )
             
-            # Update the collection name if a new one was provided
             if collection_name != self.collection_name:
                 self.collection_name = collection_name
             
-            logger.info(f"Created collection {self.collection_name}")
+            logger.info(f"Created new collection {self.collection_name}")
             return True
             
         except Exception as e:
