@@ -356,73 +356,57 @@ class QdrantAdapter:
     def situate_context(self, doc: str, chunk: str) -> tuple[str, Any]:
         """Generate context using both document-level and chunk-specific information."""
         try:
-            # First prompt to extract document-level information
-            doc_prompt = """
-            <document>
-            {doc_content}
-            </document>
-
-            Based on the ENTIRE document above, identify ONLY:
-            1. The main company name and any secondary companies mentioned (use EXACT spellings)
-            2. The document date (YYYY.MM.DD format)
-            3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
-
-            Answer in a structured format:
-            Company: [company name]
-            Secondary Companies: [list or none]
-            Date: [YYYY.MM.DD]
-            Fiscal Period: [periods]
-            """
-
-            # Get document-level information
-            doc_response = self.anthropic_client.messages.create(
+            # First prompt to extract document-level information with caching
+            doc_response = self.anthropic_client.beta.prompt_caching.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=1000,
                 temperature=0.0,
                 messages=[{
-                    "role": "user",
-                    "content": doc_prompt.format(doc_content=doc)
-                }]
+                    "role": "user", 
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"""<document>
+                            {doc}
+                            </document>
+
+                            Based on the ENTIRE document above, identify ONLY:
+                            1. The main company name and any secondary companies mentioned (use EXACT spellings)
+                            2. The document date (YYYY.MM.DD format)
+                            3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
+
+                            Answer in a structured format:
+                            Company: [company name]
+                            Secondary Companies: [list or none]
+                            Date: [YYYY.MM.DD]
+                            Fiscal Period: [periods]""",
+                            "cache_control": {"type": "ephemeral"}  # Cache the document analysis
+                        },
+                        {
+                            "type": "text",
+                            "text": f"""Using the document-level information above, create a context for this specific chunk:
+                            <chunk>
+                            {chunk}
+                            </chunk>
+
+                            Give a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
+                            
+                            Answer only with the succinct context, and nothing else."""
+                        }
+                    ]
+                }],
+                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
             )
-            doc_info = doc_response.content[0].text.strip()
 
-            # Second prompt to generate chunk-specific context
-            chunk_prompt = """
-            Using this document-level information:
-            {doc_info}
-
-            Create a context for this specific chunk:
-            <chunk>
-            {chunk_content}
-            </chunk>
-
-            Give a very succinct high-level overview (max 100 characters) of THIS SPECIFIC CHUNK's content focusing on keywords for better retrieval.
-            
-            Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
-            """
-
-            # Get chunk-specific context
-            chunk_response = self.anthropic_client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=300,
-                temperature=0.0,
-                messages=[{
-                    "role": "user",
-                    "content": chunk_prompt.format(doc_info=doc_info, chunk_content=chunk)
-                }]
-            )
-            chunk_context = chunk_response.content[0].text.strip()
-            
-            # Combine both into final context
-            final_context = f"{doc_info}\n\n{chunk_context}"
-            
-            # Combine usage statistics
-            total_usage = {
-                "input_tokens": doc_response.usage.input_tokens + chunk_response.usage.input_tokens,
-                "output_tokens": doc_response.usage.output_tokens + chunk_response.usage.output_tokens
+            # Extract usage statistics
+            usage = {
+                "input_tokens": doc_response.usage.input_tokens,
+                "output_tokens": doc_response.usage.output_tokens,
+                "cache_creation_tokens": getattr(doc_response.usage, 'cache_creation_input_tokens', 0),
+                "cache_read_tokens": getattr(doc_response.usage, 'cache_read_input_tokens', 0)
             }
-            
-            return final_context, total_usage
+
+            return doc_response.content[0].text.strip(), usage
 
         except Exception as e:
             logger.error(f"Error generating context: {str(e)}")
