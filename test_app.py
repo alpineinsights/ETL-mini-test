@@ -601,40 +601,40 @@ def save_processed_urls(urls: set) -> None:
 def initialize_clients():
     """Initialize all required clients"""
     try:
+        # Initialize session state variables
         if 'clients' not in st.session_state:
             st.session_state.clients = {}
-        
-        # Initialize Anthropic client first
-        st.session_state.clients['anthropic'] = anthropic.Client(
-            api_key=st.secrets["ANTHROPIC_API_KEY"]
-        )
-        logger.info("Successfully initialized Anthropic client")
-        
-        # Initialize Voyage embedding model
-        st.session_state.clients['embed_model'] = VoyageEmbedding(
-            api_key=st.secrets["VOYAGE_API_KEY"],
-            model_name=DEFAULT_EMBEDDING_MODEL
-        )
-        logger.info("Successfully initialized Voyage embedding model")
-        
-        # Initialize Qdrant last (depends on other clients)
-        qdrant_client = initialize_qdrant()
-        if not qdrant_client:
-            raise Exception("Failed to initialize Qdrant client")
-            
-        st.session_state.clients['qdrant'] = QdrantAdapter(
-            url=st.secrets["QDRANT_URL"],
-            api_key=st.secrets["QDRANT_API_KEY"],
-            collection_name="documents",
-            embedding_model=DEFAULT_EMBEDDING_MODEL,
-            anthropic_client=st.session_state.clients['anthropic']
-        )
-        logger.info("Successfully initialized Qdrant client")
-        
+
+        # Initialize Anthropic client
+        if 'anthropic' not in st.session_state.clients:
+            try:
+                st.session_state.clients['anthropic'] = anthropic.Client(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"]
+                )
+                logger.info("Successfully initialized Anthropic client")
+            except Exception as e:
+                st.error(f"Error initializing Anthropic client: {str(e)}")
+                return False
+
+        # Initialize Qdrant client
+        if 'qdrant' not in st.session_state.clients:
+            qdrant_client = initialize_qdrant()
+            if qdrant_client:
+                st.session_state.clients['qdrant'] = QdrantAdapter(
+                    url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+                    api_key=st.secrets["QDRANT_API_KEY"],
+                    collection_name="documents",
+                    embedding_model=DEFAULT_EMBEDDING_MODEL,
+                    anthropic_client=st.session_state.clients['anthropic']
+                )
+                logger.info("Successfully initialized Qdrant client")
+            else:
+                st.error("Failed to initialize Qdrant client")
+                return False
+
         return True
-        
     except Exception as e:
-        logger.error(f"Error initializing clients: {str(e)}")
+        st.error(f"Error initializing clients: {str(e)}")
         return False
 
 def cleanup_temp_files():
