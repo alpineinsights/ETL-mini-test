@@ -366,9 +366,24 @@ class QdrantAdapter:
             Fiscal Period: [periods]
             """
 
+            # Get document-level information
+            doc_response = self.anthropic_client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=1000,
+                temperature=0.0,
+                messages=[{
+                    "role": "user",
+                    "content": doc_prompt.format(doc_content=doc)
+                }]
+            )
+            doc_info = doc_response.content[0].text.strip()
+
             # Second prompt to generate chunk-specific context
             chunk_prompt = """
-            Using the document-level information above, create a context for this specific chunk:
+            Using this document-level information:
+            {doc_info}
+
+            Create a context for this specific chunk:
             <chunk>
             {chunk_content}
             </chunk>
@@ -378,37 +393,28 @@ class QdrantAdapter:
             Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
             """
 
-            response = self.anthropic_client.beta.prompt_caching.messages.create(
+            # Get chunk-specific context
+            chunk_response = self.anthropic_client.messages.create(
                 model="claude-3-haiku-20240307",
-                max_tokens=1000,
+                max_tokens=300,
                 temperature=0.0,
-                messages=[
-                    {
-                        "role": "user", 
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": doc_prompt.format(doc_content=doc),
-                                "cache_control": {"type": "ephemeral"}
-                            },
-                            {
-                                "type": "text",
-                                "text": chunk_prompt.format(chunk_content=chunk),
-                            }
-                        ]
-                    }
-                ],
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"}
+                messages=[{
+                    "role": "user",
+                    "content": chunk_prompt.format(doc_info=doc_info, chunk_content=chunk)
+                }]
             )
-
-            # Parse the response to combine document-level info with chunk-specific context
-            doc_info = response.content[0].text.split("\n\n")[0]  # First part contains document info
-            chunk_context = response.content[0].text.split("\n\n")[1]  # Second part contains chunk context
+            chunk_context = chunk_response.content[0].text.strip()
             
             # Combine both into final context
-            final_context = f"{doc_info}\n{chunk_context}"
+            final_context = f"{doc_info}\n\n{chunk_context}"
             
-            return final_context, response.usage
+            # Combine usage statistics
+            total_usage = {
+                "input_tokens": doc_response.usage.input_tokens + chunk_response.usage.input_tokens,
+                "output_tokens": doc_response.usage.output_tokens + chunk_response.usage.output_tokens
+            }
+            
+            return final_context, total_usage
 
         except Exception as e:
             logger.error(f"Error generating context: {str(e)}")
