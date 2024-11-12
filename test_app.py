@@ -86,7 +86,7 @@ if 'qdrant_client' not in st.session_state:
     except Exception as e:
         st.error(f"Error initializing Qdrant client: {str(e)}")
 
-# Initialize session state for metrics if not exists
+# Initialize session state for metrics
 if 'processing_metrics' not in st.session_state:
     st.session_state.processing_metrics = {
         'total_documents': 0,
@@ -98,7 +98,16 @@ if 'processing_metrics' not in st.session_state:
         'stored_vectors': 0,
         'cache_hits': 0,
         'errors': [],
-        'start_time': None
+        'start_time': None,
+        'stages': {
+            'parsing': {'success': 0, 'failed': 0},
+            'chunking': {'success': 0, 'failed': 0},
+            'context': {'success': 0, 'failed': 0},
+            'metadata': {'success': 0, 'failed': 0},
+            'dense_vectors': {'success': 0, 'failed': 0},
+            'sparse_vectors': {'success': 0, 'failed': 0},
+            'upserts': {'success': 0, 'failed': 0}
+        }
     }
 
 # Initialize session state for clients if not exists
@@ -341,35 +350,49 @@ def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
         raise
 
 def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Process chunks to add context and embeddings."""
     processed_chunks = []
     
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         try:
-            # Generate context using the detailed prompt
-            context = st.session_state.clients['anthropic'].messages.create(
-                model=DEFAULT_LLM_MODEL,
-                max_tokens=300,
-                messages=[{
-                    "role": "user", 
-                    "content": f"""Give a short succinct context to situate this chunk within the overall enclosed document broader context for the purpose of improving similarity search retrieval of the chunk. 
-
-Make sure to list:
-1. The name of the main company mentioned AND any other secondary companies mentioned if applicable. ONLY use company names exact spellings from the list below to facilitate similarity search retrieval.
-2. The apparent date of the document (YYYY.MM.DD)
-3. Any fiscal period mentioned. ALWAYS use BOTH abreviated tags (e.g. Q1 2024, Q2 2024, H1 2024) AND more verbose tags (e.g. first quarter 2024, second quarter 2024, first semester 2024) to improve retrieval.
-4. A very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
-
-Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
-
-Text to process:
-{chunk['text']}"""
-                }]
-            ).content[0].text
+            status_text = f"Processing chunk {i+1}/{len(chunks)}"
+            logger.info(status_text)
             
-            # Generate dense embedding for chunk content
-            dense_vector = st.session_state.clients['embed_model'].get_text_embedding(chunk['text'])
-            
+            # Generate context
+            try:
+                context = st.session_state.clients['anthropic'].messages.create(...)
+                st.session_state.processing_metrics['stages']['context']['success'] += 1
+            except Exception as e:
+                logger.error(f"Context generation failed: {e}")
+                st.session_state.processing_metrics['stages']['context']['failed'] += 1
+                continue
+
+            # Generate dense embedding
+            try:
+                dense_vector = st.session_state.clients['embed_model'].get_text_embedding(chunk['text'])
+                st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
+            except Exception as e:
+                logger.error(f"Dense embedding failed: {e}")
+                st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
+                continue
+
+            # Store in Qdrant
+            try:
+                chunk_id = f"{metadata.get('file_name', 'unknown')}_{i}"
+                success = st.session_state.clients['qdrant'].upsert_chunk(
+                    chunk_text=chunk['text'],
+                    context_text=context,
+                    dense_embedding=dense_vector,
+                    metadata=metadata,
+                    chunk_id=chunk_id
+                )
+                if success:
+                    st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                    st.session_state.processing_metrics['stored_vectors'] += 1
+            except Exception as e:
+                logger.error(f"Vector storage failed: {e}")
+                st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                continue
+
             processed_chunks.append({
                 'chunk_text': chunk['text'],
                 'context': context,
@@ -377,7 +400,6 @@ Text to process:
                 **metadata
             })
             
-            # Update metrics
             st.session_state.processing_metrics['successful_chunks'] += 1
             
         except Exception as e:
@@ -419,6 +441,23 @@ def display_metrics():
         with st.expander("Processing Errors"):
             for error in metrics['errors']:
                 st.error(error)
+    
+    # Add processing stages breakdown
+    st.subheader("Processing Stages")
+    stages_data = []
+    for stage, counts in metrics['stages'].items():
+        total = counts['success'] + counts['failed']
+        if total > 0:
+            success_rate = (counts['success'] / total) * 100
+            stages_data.append({
+                'Stage': stage.replace('_', ' ').title(),
+                'Success': counts['success'],
+                'Failed': counts['failed'],
+                'Success Rate': f"{success_rate:.1f}%"
+            })
+    
+    if stages_data:
+        st.dataframe(stages_data)
 
 def parse_sitemap(url: str) -> List[str]:
     """Parse XML sitemap and return list of URLs."""
@@ -538,7 +577,16 @@ with st.sidebar:
             'stored_vectors': 0,
             'cache_hits': 0,
             'errors': [],
-            'start_time': None
+            'start_time': None,
+            'stages': {
+                'parsing': {'success': 0, 'failed': 0},
+                'chunking': {'success': 0, 'failed': 0},
+                'context': {'success': 0, 'failed': 0},
+                'metadata': {'success': 0, 'failed': 0},
+                'dense_vectors': {'success': 0, 'failed': 0},
+                'sparse_vectors': {'success': 0, 'failed': 0},
+                'upserts': {'success': 0, 'failed': 0}
+            }
         }
         st.success("Metrics reset successfully")
     
