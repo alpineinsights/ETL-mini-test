@@ -139,35 +139,48 @@ if 'processing_metrics' not in st.session_state:
 if 'clients' not in st.session_state:
     st.session_state.clients = {}
 
-# Initialize clients
+# Initialize collection name if not exists
+if 'collection_name' not in st.session_state:
+    st.session_state.collection_name = "documents"
+
 try:
-    # Initialize Anthropic client
-    st.session_state.clients['anthropic'] = anthropic.Client(
-        api_key=st.secrets["ANTHROPIC_API_KEY"]
-    )
-    
-    # Initialize Voyage client
-    st.session_state.clients['embed_model'] = VoyageEmbedding(
-        model_name=DEFAULT_EMBEDDING_MODEL,
-        api_key=st.secrets["VOYAGE_API_KEY"],
-        embed_batch_size=10  # Optional: adjust based on your needs
-    )
-    
-    # Initialize LlamaParse client - Fix the API key name
-    st.session_state.clients['llama_parser'] = LlamaParse(
-        api_key=st.secrets["LLAMA_PARSE_API_KEY"]  # Changed from LLAMA_CLOUD_API_KEY
-    )
-    
-    # Initialize Qdrant client
-    qdrant_client = initialize_qdrant()
-    if qdrant_client:
-        st.session_state.clients['qdrant'] = QdrantAdapter(
-            url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-            api_key=st.secrets["QDRANT_API_KEY"],
-            collection_name="documents",
-            embedding_model=DEFAULT_EMBEDDING_MODEL
+    # Initialize Anthropic client first
+    if 'anthropic' not in st.session_state.clients:
+        st.session_state.clients['anthropic'] = anthropic.Client(
+            api_key=st.secrets["ANTHROPIC_API_KEY"]
         )
-    
+        logger.info("Successfully initialized Anthropic client")
+
+    # Initialize Voyage embedding model
+    if 'embed_model' not in st.session_state.clients:
+        st.session_state.clients['embed_model'] = VoyageEmbedding(
+            api_key=st.secrets["VOYAGE_API_KEY"],
+            model_name=DEFAULT_EMBEDDING_MODEL
+        )
+        logger.info("Successfully initialized Voyage embedding model")
+
+    # Initialize Llama parser
+    if 'llama_parser' not in st.session_state.clients:
+        st.session_state.clients['llama_parser'] = LlamaParse(
+            api_key=st.secrets["LLAMA_PARSE_API_KEY"]
+        )
+        logger.info("Successfully initialized Llama parser")
+
+    # Initialize Qdrant client last (since it depends on other clients)
+    if 'qdrant' not in st.session_state.clients:
+        qdrant_client = initialize_qdrant()
+        if qdrant_client:
+            st.session_state.clients['qdrant'] = QdrantAdapter(
+                url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name=st.session_state.collection_name,
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=st.session_state.clients['anthropic']  # Pass the initialized Anthropic client
+            )
+            logger.info("Successfully initialized Qdrant client")
+        else:
+            raise Exception("Failed to initialize Qdrant client")
+
     logger.info("Successfully initialized all clients")
 except Exception as e:
     st.error(f"Error initializing clients: {str(e)}")
