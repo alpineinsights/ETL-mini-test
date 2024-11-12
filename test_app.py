@@ -41,8 +41,8 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Document Processing Pipeline", layout="wide")
 
 # Configuration defaults
-DEFAULT_CHUNK_SIZE = 500
-DEFAULT_CHUNK_OVERLAP = 50
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 200
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
 DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"  # Update this with your actual Qdrant URL
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
@@ -105,21 +105,18 @@ if 'processing_metrics' not in st.session_state:
 if 'clients' not in st.session_state:
     try:
         st.session_state.clients = {
-            'anthropic': anthropic.Client(
-                api_key=st.secrets['ANTHROPIC_API_KEY']
-            ),
             'llama_parser': LlamaParse(
-                api_key=st.secrets['LLAMA_PARSE_API_KEY']
+                api_key=st.secrets['LLAMA_PARSE_API_KEY'],
+                verbose=True
             ),
             'embed_model': VoyageEmbedding(
-                model_name=DEFAULT_EMBEDDING_MODEL,
+                model_name="voyage-finance-2",
                 voyage_api_key=st.secrets['VOYAGE_API_KEY']
             ),
             'qdrant': QdrantAdapter(
-                url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-                api_key=st.secrets["QDRANT_API_KEY"],
-                collection_name="documents",
-                embedding_model=DEFAULT_EMBEDDING_MODEL
+                url=st.secrets['QDRANT_URL'],
+                api_key=st.secrets['QDRANT_API_KEY'],
+                embedding_model="voyage-finance-2"
             )
         }
         logger.info("Successfully initialized all clients")
@@ -247,6 +244,35 @@ def generate_context(chunk_text: str) -> str:
         logger.error(f"Error generating context: {str(e)}")
         raise
 
+def extract_document_metadata(text: str) -> Dict[str, str]:
+    """Extract metadata from document text using Claude."""
+    try:
+        prompt = """Extract the following information from the document:
+- company: The company name
+- date: The report/transcript date (in YYYY-MM-DD format)
+- fiscal_period: The fiscal period (e.g., Q1 2024, FY 2023)
+
+Format the response as a JSON object with these exact keys. If any information is not found, use an empty string."""
+
+        response = st.session_state.clients['claude'].messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": f"{prompt}\n\nDocument text:\n{text[:2000]}"}
+            ]
+        )
+        
+        metadata = json.loads(response.content[0].text)
+        return metadata
+        
+    except Exception as e:
+        logger.error(f"Error extracting metadata: {str(e)}")
+        return {
+            "company": "",
+            "date": "",
+            "fiscal_period": ""
+        }
+
 def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
     """Process a PDF file and return extracted text and metadata"""
     try:
@@ -276,11 +302,13 @@ def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
     processed_chunks = []
     for chunk in chunks:
         try:
+            # Generate embeddings
+            dense_embedding = st.session_state.clients['embed_model'].embed_text(
+                chunk['text']  # Use embed_text instead of embed_query
+            )
+            
             # Generate context
             context = generate_context(chunk['text'])
-            
-            # Generate embedding
-            embedding = st.session_state.clients['embed_model'].embed_query(context)
             
             # Store in Qdrant
             chunk_id = f"{metadata['url']}_{len(processed_chunks)}"
@@ -288,7 +316,7 @@ def process_chunks(chunks: List[Dict], metadata: Dict) -> List[Dict]:
                 chunk_id=chunk_id,
                 chunk_text=chunk['text'],
                 context_text=context,
-                dense_embedding=embedding,
+                dense_embedding=dense_embedding,
                 metadata={
                     **metadata,
                     'chunk_index': len(processed_chunks)
@@ -402,82 +430,48 @@ def process_url(url: str) -> Dict[str, Any]:
     try:
         logger.info(f"Starting to process URL: {url}")
         
-        # First check if the file exists and is accessible
-        logger.info(f"Checking URL accessibility: {url}")
-        response = requests.head(url, timeout=30)
-        if response.status_code != 200:
-            logger.error(f"URL not accessible: {url} (status: {response.status_code})")
-            raise ValueError(f"URL not accessible (status code {response.status_code}): {url}")
-            
-        # Download PDF to temporary file
-        temp_dir = tempfile.mkdtemp()
-        logger.info(f"Created temporary directory: {temp_dir}")
+        # Download PDF content
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        
+        # Create temporary file with .pdf extension
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
         
         try:
-            # Download file
-            logger.info(f"Downloading PDF from: {url}")
-            pdf_response = requests.get(url, timeout=60)
-            pdf_response.raise_for_status()
-            
-            # Save to temporary file
-            filename = url.split('/')[-1]
-            temp_path = os.path.join(temp_dir, filename)
-            logger.info(f"Saving PDF to: {temp_path}")
-            
-            with open(temp_path, 'wb') as f:
-                f.write(pdf_response.content)
-            
-            logger.info(f"PDF size: {len(pdf_response.content)} bytes")
-            
-            # Initialize LlamaParse with specific settings
-            logger.info("Initializing LlamaParse")
-            parser = LlamaParse(
-                api_key=st.secrets["LLAMA_PARSE_API_KEY"],
-                result_type="markdown",
-                language="en",
-                verbose=True,
-                num_workers=4,
-                disable_ocr=False,
-                skip_diagonal_text=True,
-                check_interval=2  # Check status more frequently
-            )
-            
-            # Process the PDF directly with LlamaParse
-            logger.info(f"Processing PDF with LlamaParse: {temp_path}")
-            documents = parser.load_data(temp_path)
+            # Process with LlamaParse
+            documents = st.session_state.clients['llama_parser'].load_data(temp_path)
             
             if not documents:
-                logger.error(f"LlamaParse returned no documents for: {url}")
                 raise ValueError(f"No content extracted from {url}")
             
-            logger.info(f"Successfully extracted {len(documents)} documents")
+            document = documents[0] if isinstance(documents, list) else documents
             
-            # Get the first document
-            document = documents[0]
+            # Extract metadata using Claude
+            llm_metadata = extract_document_metadata(document.text)
             
-            # Extract metadata
+            # Combine with file metadata
             metadata = {
-                "url": url,
-                "title": getattr(document, "metadata", {}).get("title", filename),
-                "author": getattr(document, "metadata", {}).get("author", ""),
-                "date": getattr(document, "metadata", {}).get("date", ""),
-                "processed_at": datetime.now().isoformat()
+                "company": llm_metadata.get("company", ""),
+                "date": llm_metadata.get("date", ""),
+                "fiscal_period": llm_metadata.get("fiscal_period", ""),
+                "creation_date": datetime.now().isoformat(),
+                "file_name": url.split('/')[-1],
+                "url": url
             }
             
-            logger.info(f"Successfully processed URL: {url}")
             return {
                 "text": document.text,
                 "metadata": metadata
             }
             
         finally:
-            # Clean up temporary directory
-            logger.info(f"Cleaning up temporary directory: {temp_dir}")
-            shutil.rmtree(temp_dir)
+            # Clean up temporary file
+            os.unlink(temp_path)
             
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
-        st.error(f"Failed to process {url}: {str(e)}")
         raise
 
 def save_processed_urls(urls: set) -> None:
@@ -687,9 +681,12 @@ with tab2:
                     st.write("**Context:**")
                     st.write(result['payload']['context'])
                     st.write("**Metadata:**")
-                    metadata = {k: v for k, v in result['payload'].items() 
-                              if k not in ['chunk_text', 'context']}
-                    st.json(metadata)
+                    # Display only specified metadata fields
+                    display_metadata = {
+                        k: result['payload'].get(k, "") 
+                        for k in ["company", "date", "fiscal_period", "creation_date", "file_name", "url"]
+                    }
+                    st.json(display_metadata)
             
         except Exception as e:
             st.error(f"Error performing search: {str(e)}")
