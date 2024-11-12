@@ -61,7 +61,7 @@ Main company: Saint Gobain
 Secondary companies: none
 date : 2024.11.21
 Q3 2024, third quarter of 2024
-Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operating leverage. 
+Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operatng leverage. 
 """
 
 VECTOR_DIMENSIONS = {
@@ -248,88 +248,164 @@ def create_semantic_chunks(
     
     return chunks
 
-def generate_document_context(doc_text: str) -> Dict[str, str]:
-    """Generate document-level context that will be consistent across all chunks."""
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
+)
+def generate_context(chunk_text: str) -> str:
+    """Generate contextual description for a chunk of text using Claude"""
     try:
-        response = st.session_state.clients['claude'].messages.create(
-            model="claude-3-sonnet-20240229",
-            max_tokens=1000,
-            temperature=0,
+        # Create message using the correct API format
+        response = st.session_state.clients['anthropic'].messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
             messages=[{
                 "role": "user",
-                "content": DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text)
+                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to process:\n{chunk_text}"
             }]
         )
-        return {
-            'company': response.content,  # Parse the response to extract company, date, fiscal period
-            'date': response.content,
-            'fiscal_period': response.content
-        }
+        return response.content[0].text  # Access the response content correctly
     except Exception as e:
-        logger.error(f"Document context generation failed: {str(e)}")
+        logger.error(f"Error generating context: {str(e)}")
+        st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
 
-def generate_chunk_context(chunk_text: str, doc_context: Dict[str, str]) -> str:
-    """Generate chunk-specific context using document-level information."""
+def extract_document_metadata(text: str) -> Dict[str, str]:
+    """Extract key metadata fields from document using Claude."""
     try:
-        response = st.session_state.clients['claude'].messages.create(
-            model="claude-3-sonnet-20240229",
-            max_tokens=1000,
+        response = st.session_state.clients['anthropic'].messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
             temperature=0,
+            system="You are a precise JSON generator. You only output valid JSON objects, nothing else.",
             messages=[{
-                "role": "user",
-                "content": CHUNK_CONTEXT_PROMPT.format(
-                    chunk_content=chunk_text,
-                    company=doc_context['company'],
-                    date=doc_context['date'],
-                    fiscal_period=doc_context['fiscal_period']
-                )
+                "role": "user", 
+                "content": f"""Extract exactly these three fields from the text and return them in a JSON object:
+1. company: The main company name
+2. date: The document date in YYYY.MM.DD format
+3. fiscal_period: The fiscal period mentioned (both abbreviated and verbose form)
+
+Return ONLY a JSON object like this example, with no other text:
+{{"company": "Adidas AG", "date": "2024.04.30", "fiscal_period": "Q1 2024, first quarter 2024"}}
+
+Text to analyze:
+{text[:2000]}  # Limit text length to avoid token issues
+"""
             }]
         )
-        return response.content
+
+        # Get response and clean it
+        json_str = response.content[0].text.strip()
+        
+        # Remove any markdown code block markers if present
+        json_str = json_str.replace('```json', '').replace('```', '').strip()
+        
+        # Parse JSON
+        try:
+            metadata = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from Claude: {json_str}")
+            raise ValueError(f"Failed to parse JSON from Claude response: {e}")
+
+        # Validate required fields
+        required_fields = ["company", "date", "fiscal_period"]
+        missing_fields = [field for field in required_fields if field not in metadata]
+        if missing_fields:
+            raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+
+        return metadata
     except Exception as e:
-        logger.error(f"Chunk context generation failed: {str(e)}")
+        logger.error(f"Error extracting metadata: {str(e)}")
+        raise
+
+def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
+    """Process a PDF file and return extracted text and metadata"""
+    try:
+        # Load documents - returns a list
+        documents = st.session_state.clients['llama_parser'].load_data(file_path)
+        
+        if not documents:
+            raise ValueError("No documents extracted from PDF")
+            
+        # Combine text from all documents
+        combined_text = "\n\n".join(doc.text for doc in documents)
+        
+        # Create chunks from combined text
+        chunks = create_semantic_chunks(combined_text)
+        
+        # Get metadata from first document
+        metadata = {
+            "filename": filename,
+            "title": documents[0].metadata.get("title", ""),
+            "author": documents[0].metadata.get("author", ""),
+            "creation_date": documents[0].metadata.get("creation_date", ""),
+            "page_count": len(documents)
+        }
+        
+        return {
+            "text": combined_text,
+            "chunks": chunks,  # Add chunks to return dictionary
+            "metadata": metadata
+        }
+    except Exception as e:
+        logger.error(f"Error processing PDF {filename}: {str(e)}")
         raise
 
 def process_chunks(chunks: List[Dict[str, Any]], metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Process chunks with both document and chunk-level context."""
     processed_chunks = []
-    
-    try:
-        # First, generate document-level context
-        full_text = "\n\n".join(chunk['text'] for chunk in chunks)
-        doc_context = generate_document_context(full_text)
-        metadata.update(doc_context)  # Add document context to metadata
-        
-        # Then process individual chunks
-        for chunk in chunks:
+    for chunk in chunks:
+        try:
+            # Generate context
             try:
-                # Generate chunk-specific context
-                context = generate_chunk_context(chunk['text'], doc_context)
+                context = generate_context(chunk['text'])
                 st.session_state.processing_metrics['stages']['context']['success'] += 1
-                
-                # Generate embeddings and store
+            except Exception as e:
+                logger.error(f"Context generation failed: {e}")
+                st.session_state.processing_metrics['stages']['context']['failed'] += 1
+                continue
+
+            # Generate dense embedding
+            try:
                 dense_vector = st.session_state.clients['embed_model'].get_text_embedding(chunk['text'])
                 st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-                
-                processed_chunks.append({
-                    'chunk_text': chunk['text'],
-                    'context': context,
-                    'dense_vector': dense_vector,
-                    **metadata
-                })
-                st.session_state.processing_metrics['successful_chunks'] += 1
-                
             except Exception as e:
-                logger.error(f"Error processing chunk: {str(e)}")
-                st.session_state.processing_metrics['failed_chunks'] += 1
-                st.session_state.processing_metrics['errors'].append(str(e))
+                logger.error(f"Dense embedding failed: {e}")
+                st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
                 continue
-                
-    except Exception as e:
-        logger.error(f"Error in document-level processing: {str(e)}")
-        st.session_state.processing_metrics['errors'].append(str(e))
-        
+
+            # Store in Qdrant
+            try:
+                chunk_id = f"{metadata.get('file_name', 'unknown')}_{chunks.index(chunk)}"
+                success = st.session_state.clients['qdrant'].upsert_chunk(
+                    chunk_text=chunk['text'],
+                    context_text=context,
+                    dense_embedding=dense_vector,
+                    metadata=metadata,
+                    chunk_id=chunk_id
+                )
+                if success:
+                    st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                    st.session_state.processing_metrics['stored_vectors'] += 1
+            except Exception as e:
+                logger.error(f"Vector storage failed: {e}")
+                st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                continue
+
+            processed_chunks.append({
+                'chunk_text': chunk['text'],
+                'context': context,
+                'dense_vector': dense_vector,
+                **metadata
+            })
+            st.session_state.processing_metrics['successful_chunks'] += 1
+
+        except Exception as e:
+            logger.error(f"Error processing chunk: {str(e)}")
+            st.session_state.processing_metrics['failed_chunks'] += 1
+            st.session_state.processing_metrics['errors'].append(str(e))
+            continue
+
     return processed_chunks
 
 def display_metrics():
@@ -487,13 +563,6 @@ st.title("Document Processing Pipeline")
 # Sidebar controls
 with st.sidebar:
     st.header("Controls")
-    
-    # Collection name input
-    collection_name = st.text_input(
-        "Collection Name",
-        value="documents",
-        help="Specify the name of the collection to use"
-    )
     
     if st.button("Reset Metrics"):
         st.session_state.processing_metrics = metrics_template.copy()
