@@ -268,21 +268,26 @@ Return only a JSON object with these three fields."""
 def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
     """Process a PDF file and return extracted text and metadata"""
     try:
-        result = st.session_state.clients['llama_parser'].load_data(file_path)
+        # Load documents - returns a list
+        documents = st.session_state.clients['llama_parser'].load_data(file_path)
         
-        if not result or not result.text:
-            raise ValueError("No text extracted from PDF")
+        if not documents:
+            raise ValueError("No documents extracted from PDF")
             
+        # Combine text from all documents
+        combined_text = "\n\n".join(doc.text for doc in documents)
+        
+        # Get metadata from first document (usually contains file-level metadata)
         metadata = {
             "filename": filename,
-            "title": result.metadata.get("title", ""),
-            "author": result.metadata.get("author", ""),
-            "creation_date": result.metadata.get("creation_date", ""),
-            "page_count": result.metadata.get("page_count", 0)
+            "title": documents[0].metadata.get("title", ""),
+            "author": documents[0].metadata.get("author", ""),
+            "creation_date": documents[0].metadata.get("creation_date", ""),
+            "page_count": len(documents)  # Use actual number of pages
         }
         
         return {
-            "text": result.text,
+            "text": combined_text,
             "metadata": metadata
         }
     except Exception as e:
