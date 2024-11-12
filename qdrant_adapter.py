@@ -10,6 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,8 @@ class QdrantAdapter:
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
                     indexing_threshold=0,  # Immediate indexing
-                    memmap_threshold=20000  # Memory mapping threshold
+                    memmap_threshold=20000,  # Memory mapping threshold
+                    max_optimization_threads=2  # Add this line to fix validation error
                 )
             )
             
@@ -155,11 +157,14 @@ class QdrantAdapter:
                 raise ValueError("Chunk text and context text cannot be empty")
             if not dense_embedding or len(dense_embedding) == 0:
                 raise ValueError("Dense embedding cannot be empty")
-                
+            
+            # Generate UUID for point ID
+            point_id = str(uuid.uuid4())  # Convert UUID to string
+            
             # Create point
             point = models.PointStruct(
-                id=chunk_id,
-                vector=dense_embedding,  # Changed from vectors to vector
+                id=point_id,
+                vector=dense_embedding,
                 payload={
                     "chunk_text": chunk_text,
                     "context": context_text,
@@ -168,6 +173,10 @@ class QdrantAdapter:
                 }
             )
             
+            # Validate vector dimensions
+            if len(dense_embedding) != self.dense_dim:
+                raise ValueError(f"Vector dimension mismatch. Expected {self.dense_dim}, got {len(dense_embedding)}")
+            
             # Upsert point
             self.client.upsert(
                 collection_name=self.collection_name,
@@ -175,11 +184,11 @@ class QdrantAdapter:
                 wait=True
             )
             
-            logger.info(f"Successfully upserted chunk {chunk_id}")
+            logger.info(f"Successfully upserted point {point_id}")
             return True
             
         except Exception as e:
-            logger.error(f"Error upserting chunk {chunk_id}: {str(e)}")
+            logger.error(f"Error upserting chunk: {str(e)}")
             raise
 
     @retry(
