@@ -53,7 +53,7 @@ Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gob
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
-    def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2"):
+    def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
         """
         Initialize Qdrant client.
         
@@ -62,6 +62,7 @@ class QdrantAdapter:
             api_key: API key for authentication
             collection_name: Name of the collection to use
             embedding_model: Name of the embedding model to use
+            anthropic_client: Initialized Anthropic client for context generation
         """
         if embedding_model not in ["voyage-finance-2", "voyage-large-3"]:
             raise ValueError("embedding_model must be one of: voyage-finance-2, voyage-large-3")
@@ -77,6 +78,7 @@ class QdrantAdapter:
             self.embedding_model = embedding_model
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
             self.sparse_dim = 100  # Reduced dimension for TF-IDF
+            self.anthropic_client = anthropic_client  # Store the Anthropic client
             
             # Initialize TF-IDF vectorizer with reduced vocabulary size
             self.vectorizer = TfidfVectorizer(
