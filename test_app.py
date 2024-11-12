@@ -368,7 +368,7 @@ Text to process:
             ).content[0].text
             
             # Generate dense embedding for chunk content
-            dense_vector = st.session_state.clients['embed_model'].embed_text(chunk['text'])
+            dense_vector = st.session_state.clients['embed_model'].get_text_embedding(chunk['text'])
             
             processed_chunks.append({
                 'chunk_text': chunk['text'],
@@ -702,7 +702,7 @@ with tab2:
     if query:
         try:
             # Generate query embedding
-            query_embedding = st.session_state.clients['embed_model'].embed_text(query)
+            query_embedding = st.session_state.clients['embed_model'].get_query_embedding(query)
             
             # Search
             results = st.session_state.clients['qdrant'].search(
