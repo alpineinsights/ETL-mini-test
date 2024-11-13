@@ -236,6 +236,49 @@ def parse_sitemap(url: str) -> List[str]:
         logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
+def create_semantic_chunks(text: str) -> List[Dict[str, Any]]:
+    """Create semantic chunks from text using sentence boundaries."""
+    try:
+        # Split into sentences and combine into chunks
+        sentences = text.split('.')
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            sentence = sentence.strip() + '.'
+            sentence_length = len(sentence.split())
+            
+            if current_length + sentence_length > st.session_state.chunk_size:
+                if current_chunk:  # Save current chunk if it exists
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append({
+                        'text': chunk_text,
+                        'length': current_length
+                    })
+                current_chunk = [sentence]
+                current_length = sentence_length
+            else:
+                current_chunk.append(sentence)
+                current_length += sentence_length
+        
+        # Add the last chunk if it exists
+        if current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            chunks.append({
+                'text': chunk_text,
+                'length': current_length
+            })
+        
+        # Update metrics
+        st.session_state.processing_metrics['total_chunks'] += len(chunks)
+        
+        return chunks
+        
+    except Exception as e:
+        logger.error(f"Error creating semantic chunks: {str(e)}")
+        raise
+
 async def process_url(url: str) -> Optional[Dict[str, Any]]:
     """Process a single URL and return chunks and metadata"""
     try:
