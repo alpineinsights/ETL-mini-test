@@ -367,7 +367,7 @@ class QdrantAdapter:
             raise
 
     def situate_context(self, doc: str, chunk: str) -> tuple[str, Any]:
-        """Generate context using both document-level and chunk-specific information."""
+        """Generate context using both document-level and chunk-specific information with caching."""
         return rate_limited_context(self._situate_context, doc, chunk)
 
     def recover_collection(self) -> bool:
@@ -383,15 +383,23 @@ class QdrantAdapter:
         return False
 
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
-        """Extract metadata from document text using Claude."""
+        """Extract metadata from document text using Claude with prompt caching."""
         try:
-            # Use existing DOCUMENT_CONTEXT_PROMPT
-            response = self.anthropic_client.messages.create(
+            # Use prompt caching for document-level analysis
+            response = self.anthropic_client.beta.prompt_caching.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=300,
+                system=[{
+                    "type": "text",
+                    "text": DOCUMENT_CONTEXT_PROMPT,
+                    "cache_control": {"type": "ephemeral"}
+                }],
                 messages=[{
                     "role": "user",
-                    "content": DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
+                    "content": {
+                        "type": "text",
+                        "text": f"Document text:\n{doc_text[:2000]}"
+                    }
                 }]
             )
             
@@ -435,4 +443,28 @@ class QdrantAdapter:
                 
         except Exception as e:
             logger.error(f"Error extracting metadata: {str(e)}")
+            raise
+
+    def _situate_context(self, doc: str, chunk: str) -> tuple[str, Any]:
+        """Generate context using both document-level and chunk-specific information with caching."""
+        try:
+            response = self.anthropic_client.beta.prompt_caching.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=300,
+                system=[{
+                    "type": "text",
+                    "text": CHUNK_CONTEXT_PROMPT,
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                messages=[{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": f"Document text:\n{doc[:2000]}\n\nChunk text:\n{chunk}"
+                    }]
+                }]
+            )
+            return response.content[0].text, response
+        except Exception as e:
+            logger.error(f"Error generating context: {str(e)}")
             raise
