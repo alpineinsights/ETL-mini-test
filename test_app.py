@@ -24,7 +24,6 @@ from qdrant_client import QdrantClient, models
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
 import sys
-from pathlib import Path
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -43,13 +42,15 @@ from qdrant_adapter import QdrantAdapter, VECTOR_DIMENSIONS
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Configuration defaults
+# Configuration defaults and constants
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 100
 DEFAULT_EMBEDDING_MODEL = "voyage-finance-2"
-DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"  # Update this with your actual Qdrant URL
+DEFAULT_QDRANT_URL = "https://3efb9175-b8b6-43f3-aef4-d2695ed84dc6.europe-west3-0.gcp.cloud.qdrant.io"
 DEFAULT_LLM_MODEL = "claude-3-haiku-20240307"
+
 DEFAULT_CONTEXT_PROMPT = """Give a short succinct context to situate this chunk within the overall enclosed document broader context for the purpose of improving similarity search retrieval of the chunk. 
+
 Provide a very succint high level overview (i.e. not a summary) of the chunk's content in no more than 100 characters with a focus on keywords for better similarity search retrieval
 
 Answer only with the succinct context, and nothing else (no introduction, no conclusion, no headings).
@@ -58,12 +59,22 @@ Example:
 Chunk is part of a release of Saint Gobain Q3 2024 results emphasizing Saint Gobain's performance in construction chemicals in the US market, price and volumes effects, and operating leverage. 
 """
 
-VECTOR_DIMENSIONS = {
-    "voyage-finance-2": 1024,
-    "voyage-3": 1024
+# Add after other constants (around line 51)
+metrics_template = {
+    'start_time': None,
+    'total_docs': 0,
+    'processed_docs': 0,
+    'total_chunks': 0,
+    'processed_chunks': 0,
+    'errors': 0,
+    'stages': {
+        'context': {'success': 0, 'failed': 0},
+        'dense_vectors': {'success': 0, 'failed': 0},
+        'upserts': {'success': 0, 'failed': 0}
+    }
 }
 
-# Configure rate limits
+# Add after VECTOR_DIMENSIONS (around line 51)
 CALLS_PER_MINUTE = {
     'anthropic': 50,
     'voyage': 100,
@@ -80,46 +91,70 @@ def rate_limited_context(func, *args, **kwargs):
 def rate_limited_embedding(func, *args, **kwargs):
     return func(*args, **kwargs)
 
-# After imports and constants, before UI code
-try:
-    # Must be first Streamlit command
-    st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
-    
-    # Initialize Sentry if configured
-    if st.secrets.get("SENTRY_DSN"):
-        sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
-    
-    # Initialize session state
-    try:
-        if st.runtime.exists():  # Move this inside the try block
-            cleanup_session_state()
-            initialize_session_state()
-    except Exception as e:
-        logger.error(f"Error initializing session state: {str(e)}")
-        st.error(f"Error initializing session state: {str(e)}")
-        st.stop()
-    
-    # Validate environment
-    validate_environment()
-    
-    # Initialize clients
-    if 'clients' not in st.session_state:
-        st.session_state.clients = {}
-
-    # Initialize Anthropic client
-    if 'anthropic' not in st.session_state.clients:
+# Utility Functions
+def cleanup_temp_files():
+    """Clean up any temporary files"""
+    temp_dir = Path('.temp')
+    if temp_dir.exists():
         try:
-            st.session_state.clients['anthropic'] = anthropic.Client(
-                api_key=st.secrets["ANTHROPIC_API_KEY"]
-            )
-            logger.info("Successfully initialized Anthropic client")
+            shutil.rmtree(temp_dir)
+            temp_dir.mkdir(exist_ok=True)
         except Exception as e:
-            st.error(f"Error initializing Anthropic client: {str(e)}")
-            st.stop()
+            logger.error(f"Error cleaning temp files: {str(e)}")
 
-    # Initialize Qdrant client
-    if 'qdrant_client' not in st.session_state:
-        try:
+def cleanup_session_state():
+    """Clean up session state and resources on app restart"""
+    try:
+        if 'clients' in st.session_state:
+            for client in st.session_state.clients.values():
+                if hasattr(client, 'close'):
+                    client.close()
+        cleanup_temp_files()
+        st.session_state.clear()
+    except Exception as e:
+        logger.error(f"Error in cleanup: {str(e)}")
+
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if 'processing_metrics' not in st.session_state:
+        st.session_state.processing_metrics = metrics_template.copy()
+    if 'processed_urls' not in st.session_state:
+        st.session_state.processed_urls = set()
+    if 'collection_name' not in st.session_state:
+        st.session_state.collection_name = "documents"
+
+def validate_environment():
+    """Validate all required environment variables are set"""
+    required_vars = [
+        "ANTHROPIC_API_KEY",
+        "VOYAGE_API_KEY",
+        "QDRANT_URL",
+        "QDRANT_API_KEY"
+    ]
+    missing = [var for var in required_vars if not st.secrets.get(var)]
+    if missing:
+        st.error(f"Missing required environment variables: {', '.join(missing)}")
+        st.stop()
+
+def initialize_clients():
+    """Initialize all required clients"""
+    try:
+        if 'clients' not in st.session_state:
+            st.session_state.clients = {}
+
+        # Initialize Anthropic client
+        if 'anthropic' not in st.session_state.clients:
+            try:
+                st.session_state.clients['anthropic'] = anthropic.Client(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"]
+                )
+                logger.info("Successfully initialized Anthropic client")
+            except Exception as e:
+                st.error(f"Error initializing Anthropic client: {str(e)}")
+                return False
+
+        # Initialize Qdrant client
+        if 'qdrant_client' not in st.session_state:
             qdrant_client = initialize_qdrant()
             if qdrant_client:
                 st.session_state.clients['qdrant'] = QdrantAdapter(
@@ -132,23 +167,14 @@ try:
                 logger.info("Successfully initialized Qdrant client")
             else:
                 st.error("Failed to initialize Qdrant client")
-                st.stop()
-        except Exception as e:
-            st.error(f"Error initializing Qdrant client: {str(e)}")
-            st.stop()
+                return False
 
-    # Start UI code
-    st.title("Document Processing Pipeline")
+        return True
+    except Exception as e:
+        st.error(f"Error initializing clients: {str(e)}")
+        return False
 
-    # Rest of the UI code...
-
-except Exception as e:
-    st.error(f"Error during initialization: {str(e)}")
-    st.stop()
-
-if 'processed_urls' not in st.session_state:
-    st.session_state.processed_urls = set()
-
+# Processing Functions
 def count_tokens(text: str) -> int:
     """Count the number of tokens in a text string"""
     try:
@@ -158,91 +184,6 @@ def count_tokens(text: str) -> int:
         st.error(f"Error counting tokens: {str(e)}")
         return 0
 
-def create_semantic_chunks(
-    text: str,
-    max_tokens: int = DEFAULT_CHUNK_SIZE,
-    overlap_tokens: int = DEFAULT_CHUNK_OVERLAP
-) -> List[Dict[str, Any]]:
-    """Create semantically meaningful chunks from text"""
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-    
-    chunks = []
-    current_chunk = []
-    current_tokens = 0
-    previous_paragraphs = []
-    
-    for paragraph in paragraphs:
-        paragraph_tokens = count_tokens(paragraph)
-        
-        if paragraph_tokens > max_tokens:
-            sentences = [s.strip() + '.' for s in paragraph.split('. ') if s.strip()]
-            for sentence in sentences:
-                sentence_tokens = count_tokens(sentence)
-                
-                if current_tokens + sentence_tokens > max_tokens:
-                    if current_chunk:
-                        chunk_text = '\n\n'.join(current_chunk)
-                        chunk_tokens = count_tokens(chunk_text)
-                        chunks.append({
-                            'text': chunk_text,
-                            'tokens': chunk_tokens
-                        })
-                        
-                        overlap_text = []
-                        overlap_token_count = 0
-                        for prev in reversed(previous_paragraphs):
-                            prev_tokens = count_tokens(prev)
-                            if overlap_token_count + prev_tokens <= overlap_tokens:
-                                overlap_text.insert(0, prev)
-                                overlap_token_count += prev_tokens
-                            else:
-                                break
-                        
-                        current_chunk = overlap_text
-                        current_tokens = overlap_token_count
-                    
-                current_chunk.append(sentence)
-                current_tokens += sentence_tokens
-                
-        elif current_tokens + paragraph_tokens > max_tokens:
-            chunk_text = '\n\n'.join(current_chunk)
-            chunk_tokens = count_tokens(chunk_text)
-            chunks.append({
-                'text': chunk_text,
-                'tokens': chunk_tokens
-            })
-            
-            overlap_text = []
-            overlap_token_count = 0
-            for prev in reversed(previous_paragraphs):
-                prev_tokens = count_tokens(prev)
-                if overlap_token_count + prev_tokens <= overlap_tokens:
-                    overlap_text.insert(0, prev)
-                    overlap_token_count += prev_tokens
-                else:
-                    break
-            
-            current_chunk = overlap_text
-            current_tokens = overlap_token_count
-            current_chunk.append(paragraph)
-            current_tokens += paragraph_tokens
-            
-        else:
-            current_chunk.append(paragraph)
-            current_tokens += paragraph_tokens
-        
-        previous_paragraphs.append(paragraph)
-    
-    if current_chunk:
-        chunk_text = '\n\n'.join(current_chunk)
-        chunk_tokens = count_tokens(chunk_text)
-        chunks.append({
-            'text': chunk_text,
-            'tokens': chunk_tokens
-        })
-    
-    return chunks
-
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -251,7 +192,6 @@ def create_semantic_chunks(
 def generate_context(chunk_text: str) -> str:
     """Generate contextual description for a chunk of text using Claude"""
     try:
-        # Create message using the correct API format
         response = st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
@@ -260,98 +200,186 @@ def generate_context(chunk_text: str) -> str:
                 "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to process:\n{chunk_text}"
             }]
         )
-        return response.content[0].text  # Access the response content correctly
+        return response.content[0].text
     except Exception as e:
         logger.error(f"Error generating context: {str(e)}")
         st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
 
-def extract_document_metadata(text: str) -> Dict[str, str]:
-    """Extract key metadata fields from document using Claude."""
+def parse_sitemap(url: str) -> List[str]:
+    """Parse XML sitemap and return list of URLs."""
     try:
-        response = st.session_state.clients['anthropic'].messages.create(
-            model=DEFAULT_LLM_MODEL,
-            max_tokens=300,
-            temperature=0,
-            system="You are a precise JSON generator. You only output valid JSON objects, nothing else.",
-            messages=[{
-                "role": "user", 
-                "content": f"""Extract exactly these three fields from the text and return them in a JSON object:
-1. company: The main company name
-2. date: The document date in YYYY.MM.DD format
-3. fiscal_period: The fiscal period mentioned (both abbreviated and verbose form)
-
-Return ONLY a JSON object like this example, with no other text:
-{{"company": "Adidas AG", "date": "2024.04.30", "fiscal_period": "Q1 2024, first quarter 2024"}}
-
-Text to analyze:
-{text[:2000]}  # Limit text length to avoid token issues
-"""
-            }]
-        )
-
-        # Get response and clean it
-        json_str = response.content[0].text.strip()
+        logger.info(f"Fetching sitemap from {url}")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
         
-        # Remove any markdown code block markers if present
-        json_str = json_str.replace('```json', '').replace('```', '').strip()
+        root = ET.fromstring(response.content)
+        urls = []
+        namespaces = [
+            './/{http://www.sitemaps.org/schemas/sitemap/0.9}loc',
+            './/loc'  # Try without namespace
+        ]
         
-        # Parse JSON
-        try:
-            metadata = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON from Claude: {json_str}")
-            raise ValueError(f"Failed to parse JSON from Claude response: {e}")
-
-        # Validate required fields
-        required_fields = ["company", "date", "fiscal_period"]
-        missing_fields = [field for field in required_fields if field not in metadata]
-        if missing_fields:
-            raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
-
-        return metadata
+        for namespace in namespaces:
+            urls.extend([unquote(url.text) for url in root.findall(namespace)])
+        
+        if not urls:
+            logger.warning("No URLs found in sitemap")
+        else:
+            logger.info(f"Found {len(urls)} URLs in sitemap")
+            
+        return urls
+            
     except Exception as e:
-        logger.error(f"Error extracting metadata: {str(e)}")
+        logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
-def process_pdf(file_path: str, filename: str) -> Dict[str, Any]:
-    """Process a PDF file and return extracted text and metadata"""
+def process_url(url: str) -> Optional[Dict[str, Any]]:
+    """Process a single URL and return chunks and metadata"""
     try:
-        # Load documents - returns a list
-        documents = st.session_state.clients['llama_parser'].load_data(file_path)
+        # Download PDF
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
         
-        if not documents:
-            raise ValueError("No documents extracted from PDF")
-            
-        # Combine text from all documents
-        combined_text = "\n\n".join(doc.text for doc in documents)
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
         
-        # Create chunks from combined text
-        chunks = create_semantic_chunks(combined_text)
+        # Parse PDF
+        parser = LlamaParse(
+            api_key=st.secrets["LLAMAPARSE_API_KEY"],
+            result_type="markdown"
+        )
+        doc = parser.load_data(temp_path)
         
-        # Get metadata from first document
+        # Extract metadata
         metadata = {
-            "filename": filename,
-            "title": documents[0].metadata.get("title", ""),
-            "author": documents[0].metadata.get("author", ""),
-            "creation_date": documents[0].metadata.get("creation_date", ""),
-            "page_count": len(documents)
+            "url": url,
+            "file_name": Path(url).name,
+            "creation_date": datetime.now().isoformat(),
+            "company": "Unknown",  # Could be extracted from URL/content
+            "date": None,
+            "fiscal_period": None
         }
+        
+        # Create chunks
+        chunks = create_semantic_chunks(doc.text)
         
         return {
-            "text": combined_text,
-            "chunks": chunks,  # Add chunks to return dictionary
-            "metadata": metadata
+            "chunks": chunks,
+            "metadata": metadata,
+            "text": doc.text
         }
+        
     except Exception as e:
-        logger.error(f"Error processing PDF {filename}: {str(e)}")
+        logger.error(f"Error processing URL {url}: {str(e)}")
         raise
+    finally:
+        if 'temp_path' in locals():
+            os.unlink(temp_path)
+
+async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[str, Any]]:
+    """Process a single URL asynchronously"""
+    try:
+        # Download and process PDF
+        result = process_url(url)
+        
+        if result:
+            # Process chunks
+            processed_chunks = await process_chunks_async(
+                result['chunks'],
+                result['metadata'],
+                result['text']
+            )
+            
+            # Update metrics
+            st.session_state.processing_metrics['processed_docs'] += 1
+            st.session_state.processed_urls.add(url)
+            
+            # Update progress
+            progress = (index + 1) / total
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {index + 1}/{total} documents")
+            
+            return processed_chunks
+            
+    except Exception as e:
+        logger.error(f"Error processing URL {url}: {str(e)}")
+        st.session_state.processing_metrics['errors'] += 1
+        return None
+
+async def process_urls_async(urls: List[str]):
+    """Process multiple URLs concurrently"""
+    try:
+        tasks = []
+        chunk_size = 5  # Process 5 URLs at a time
+        
+        for i in range(0, len(urls), chunk_size):
+            url_batch = urls[i:i + chunk_size]
+            batch_tasks = [
+                process_single_url(url, i + j, len(urls)) 
+                for j, url in enumerate(url_batch)
+            ]
+            
+            results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Batch processing error: {str(result)}")
+                    continue
+                
+                if result:  # If not None
+                    tasks.extend(result)
+            
+            # Update progress
+            progress = min((i + chunk_size) / len(urls), 1.0)
+            progress_bar.progress(progress)
+            
+    except Exception as e:
+        logger.error(f"Error in async processing: {str(e)}")
+        st.error(f"Processing error: {str(e)}")
+        raise
+
+def save_processed_urls(urls: set) -> None:
+    """Save processed URLs to persistent storage"""
+    try:
+        with open('processed_urls.json', 'w') as f:
+            json.dump(list(urls), f)
+    except Exception as e:
+        logger.error(f"Error saving processed URLs: {str(e)}")
+
+def display_metrics():
+    """Display current processing metrics"""
+    metrics = st.session_state.processing_metrics
+    
+    if metrics['start_time']:
+        elapsed_time = datetime.now() - metrics['start_time']
+        st.metric("Elapsed Time", f"{elapsed_time.seconds} seconds")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Documents", f"{metrics['processed_docs']}/{metrics['total_docs']}")
+    with col2:
+        st.metric("Chunks", f"{metrics['processed_chunks']}/{metrics['total_chunks']}")
+    with col3:
+        st.metric("Errors", metrics['errors'])
+    
+    # Stage metrics
+    st.subheader("Processing Stages")
+    for stage, counts in metrics['stages'].items():
+        success_rate = counts['success'] / (counts['success'] + counts['failed']) * 100 if counts['success'] + counts['failed'] > 0 else 0
+        st.metric(
+            f"{stage.title()} Success Rate", 
+            f"{success_rate:.1f}%",
+            f"{counts['success']}/{counts['success'] + counts['failed']}"
+        )
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
     """Process chunks concurrently while maintaining document-level context"""
     processed_chunks = []
     
-    # Create tasks for all chunks
     async def process_single_chunk(chunk):
         try:
             # Generate context
@@ -384,7 +412,6 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
             if success:
                 st.session_state.processing_metrics['stages']['upserts']['success'] += 1
                 st.session_state.processing_metrics['stored_vectors'] += 1
-                
                 return {
                     'chunk_text': chunk['text'],
                     'context': context,
@@ -395,10 +422,9 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         except Exception as e:
             logger.error(f"Error processing chunk: {str(e)}")
             st.session_state.processing_metrics['failed_chunks'] += 1
-            st.session_state.processing_metrics['errors'].append(str(e))
             return None
 
-    # Process chunks concurrently with a limit
+    # Process chunks concurrently
     chunk_tasks = [process_single_chunk(chunk) for chunk in chunks]
     results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
     
@@ -408,266 +434,37 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
     
     return processed_chunks
 
-async def process_urls_async(urls: List[str]):
-    try:
-        tasks = []
-        chunk_size = 5
-        for i in range(0, len(urls), chunk_size):
-            url_batch = urls[i:i + chunk_size]
-            batch_tasks = [process_single_url(url, i + j, len(urls)) 
-                         for j, url in enumerate(url_batch)]
-            
-            # Handle exceptions for each batch
-            results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Batch processing error: {str(result)}")
-                    API_ERRORS.labels(api='processing').inc()
-                    continue
-                tasks.extend([r for r in result if r is not None])
-            
-            # Update progress
-            progress = min((i + chunk_size) / len(urls), 1.0)
-            progress_bar.progress(progress)
-            
-    except Exception as e:
-        logger.error(f"Error in async processing: {str(e)}")
-        st.error(f"Processing error: {str(e)}")
-        raise
+# Initialize Streamlit
+# Must be first Streamlit command
+st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
-def display_metrics():
-    """Display current processing metrics"""
-    metrics = st.session_state.processing_metrics
+# Initialize session state and validate environment
+try:
+    # Initialize Sentry if configured
+    if st.secrets.get("SENTRY_DSN"):
+        sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
     
-    if metrics['start_time']:
-        elapsed_time = datetime.now() - metrics['start_time']
-        st.metric("Elapsed Time", f"{elapsed_time.seconds} seconds")
+    # Initialize session state
+    try:
+        if st.runtime.exists():
+            cleanup_session_state()
+            initialize_session_state()
+    except Exception as e:
+        logger.error(f"Error initializing session state: {str(e)}")
+        st.error(f"Error initializing session state: {str(e)}")
+        st.stop()
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Documents Processed", f"{metrics['processed_docs']}/{metrics['total_docs']}")
-    with col2:
-        st.metric("Chunks Processed", f"{metrics['processed_chunks']}/{metrics['total_chunks']}")
+    # Validate environment
+    validate_environment()
     
-    if metrics['errors'] > 0:
-        st.error(f"Errors encountered: {metrics['errors']}")
-
-def parse_sitemap(url: str) -> List[str]:
-    """Parse XML sitemap and return list of URLs."""
-    try:
-        logger.info(f"Fetching sitemap from {url}")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        # Log response details
-        logger.info(f"Sitemap response status: {response.status_code}")
-        logger.info(f"Sitemap content length: {len(response.content)} bytes")
-        
-        # Parse XML content
-        try:
-            root = ET.fromstring(response.content)
-            logger.info(f"Successfully parsed XML content")
-            
-            # Extract URLs (try both with and without namespace)
-            urls = []
-            namespaces = [
-                './/{http://www.sitemaps.org/schemas/sitemap/0.9}loc',
-                './/loc'  # Try without namespace
-            ]
-            
-            for namespace in namespaces:
-                urls.extend([url.text for url in root.findall(namespace)])
-            
-            if not urls:
-                logger.warning("No URLs found in sitemap")
-                st.warning("No URLs found in sitemap. Please check the URL and XML format.")
-            else:
-                logger.info(f"Found {len(urls)} URLs in sitemap")
-                st.info(f"Found {len(urls)} URLs in sitemap")
-            
-            return urls
-            
-        except ET.ParseError as e:
-            logger.error(f"XML parsing error: {str(e)}")
-            st.error(f"Failed to parse XML content: {str(e)}")
-            # Log the first 500 characters of the response for debugging
-            logger.debug(f"Response content preview: {response.text[:500]}")
-            raise
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        st.error(f"Failed to fetch sitemap: {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in parse_sitemap: {str(e)}")
-        st.error(f"Unexpected error while processing sitemap: {str(e)}")
-        raise
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception(lambda e: not isinstance(e, (ValueError, KeyboardInterrupt)))
-)
-def process_url(url: str) -> Dict[str, Any]:
-    temp_file_path = None
-    try:
-        logger.info(f"Starting to process URL: {url}")
-        
-        # Download PDF content
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
-            temp_file_path = temp_file.name
-            temp_file.write(response.content)
-            
-            # Process PDF and get chunks
-            result = process_pdf(temp_file_path, Path(url).name)
-            
-            # Extract metadata from full document text
-            doc_metadata = extract_document_metadata(result['text'])
-            
-            # Update result metadata
-            result['metadata'].update(doc_metadata)
-            result['metadata']['url'] = url
-            
-            return result
-            
-    except Exception as e:
-        logger.error(f"Error processing URL {url}: {str(e)}")
-        raise
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-            except Exception as e:
-                logger.warning(f"Failed to delete temporary file {temp_file_path}: {e}")
-
-def save_processed_urls(urls: set) -> None:
-    """Save processed URLs to persistent storage"""
-    try:
-        with open('processed_urls.json', 'w') as f:
-            json.dump(list(urls), f)
-    except Exception as e:
-        logger.error(f"Error saving processed URLs: {str(e)}")
-
-# After imports but before any other code
-def initialize_clients():
-    """Initialize all required clients"""
-    try:
-        # Initialize session state variables
-        if 'clients' not in st.session_state:
-            st.session_state.clients = {}
-
-        # Initialize Anthropic client
-        if 'anthropic' not in st.session_state.clients:
-            try:
-                st.session_state.clients['anthropic'] = anthropic.Client(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"]
-                )
-                logger.info("Successfully initialized Anthropic client")
-            except Exception as e:
-                st.error(f"Error initializing Anthropic client: {str(e)}")
-                return False
-
-        # Initialize Qdrant client
-        if 'qdrant' not in st.session_state.clients:
-            qdrant_client = initialize_qdrant()
-            if qdrant_client:
-                st.session_state.clients['qdrant'] = QdrantAdapter(
-                    url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-                    api_key=st.secrets["QDRANT_API_KEY"],
-                    collection_name="documents",
-                    embedding_model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=st.session_state.clients['anthropic']
-                )
-                logger.info("Successfully initialized Qdrant client")
-            else:
-                st.error("Failed to initialize Qdrant client")
-                return False
-
-        return True
-    except Exception as e:
-        st.error(f"Error initializing clients: {str(e)}")
-        return False
-
-def cleanup_temp_files():
-    """Clean up any temporary files"""
-    temp_dir = Path('.temp')
-    if temp_dir.exists():
-        try:
-            shutil.rmtree(temp_dir)
-            temp_dir.mkdir(exist_ok=True)
-        except Exception as e:
-            logger.error(f"Error cleaning temp files: {str(e)}")
-
-def cleanup_session_state():
-    """Clean up session state and resources on app restart"""
-    try:
-        if 'clients' in st.session_state:
-            for client in st.session_state.clients.values():
-                if hasattr(client, 'close'):
-                    client.close()
-        cleanup_temp_files()
-        st.session_state.clear()
-    except Exception as e:
-        logger.error(f"Error in cleanup: {str(e)}")
-
-def validate_environment():
-    """Validate all required environment variables are set"""
-    required_vars = [
-        "ANTHROPIC_API_KEY",
-        "VOYAGE_API_KEY",
-        "QDRANT_URL",
-        "QDRANT_API_KEY"
-    ]
-    missing = [var for var in required_vars if not st.secrets.get(var)]
-    if missing:
-        st.error(f"Missing required environment variables: {', '.join(missing)}")
+    # Initialize clients
+    if not initialize_clients():
         st.stop()
 
-# Near the top of the file, after imports
-def initialize_session_state():
-    """Initialize all session state variables"""
-    if 'processing_metrics' not in st.session_state:
-        st.session_state.processing_metrics = {
-            'start_time': None,
-            'total_docs': 0,
-            'processed_docs': 0,
-            'total_chunks': 0,
-            'processed_chunks': 0,
-            'errors': 0
-        }
-    if 'processed_urls' not in st.session_state:
-        st.session_state.processed_urls = set()
-    if 'collection_name' not in st.session_state:
-        st.session_state.collection_name = "documents"
-
-# In the sitemap processing code
-if st.button("Process Sitemap"):
-    try:
-        with st.spinner("Parsing sitemap..."):
-            urls = parse_sitemap(sitemap_url)
-            if not urls:
-                st.warning("No URLs found to process")
-                st.stop()
-            
-            st.session_state.processing_metrics['total_docs'] = len(urls)  # Changed from total_documents
-            st.session_state.processing_metrics['start_time'] = datetime.now()
-            
-            # Rest of the processing code...
-
-# After validate_environment() call
-if st.runtime.exists():
-    cleanup_session_state()
-    initialize_session_state()
-
-validate_environment()
-if not initialize_clients():
+except Exception as e:
+    st.error(f"Error during initialization: {str(e)}")
     st.stop()
-
-# Then start UI code
+    # Start UI code
 st.title("Document Processing Pipeline")
 
 # Sidebar controls
