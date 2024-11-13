@@ -30,6 +30,8 @@ from functools import partial
 from ratelimit import limits, sleep_and_retry
 import sentry_sdk
 from prometheus_client import Counter, Histogram
+import nest_asyncio
+nest_asyncio.apply()
 
 # Add the current directory to Python path
 current_dir = Path(__file__).parent.absolute()
@@ -234,7 +236,7 @@ def parse_sitemap(url: str) -> List[str]:
         logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
-def process_url(url: str) -> Optional[Dict[str, Any]]:
+async def process_url(url: str) -> Optional[Dict[str, Any]]:
     """Process a single URL and return chunks and metadata"""
     try:
         # Download PDF
@@ -251,7 +253,7 @@ def process_url(url: str) -> Optional[Dict[str, Any]]:
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
             result_type="markdown"
         )
-        doc = parser.load_data(temp_path)
+        doc = await parser.aload_data(temp_path)
         
         # Extract metadata
         metadata = {
@@ -283,7 +285,7 @@ async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[
     """Process a single URL asynchronously"""
     try:
         # Download and process PDF
-        result = process_url(url)
+        result = await process_url(url)
         
         if result:
             # Process chunks
