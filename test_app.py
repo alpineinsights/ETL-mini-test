@@ -90,67 +90,57 @@ try:
         sentry_sdk.init(dsn=st.secrets["SENTRY_DSN"])
     
     # Initialize session state
-    if st.runtime.exists():
-        cleanup_session_state()
-        initialize_session_state()
+    try:
+        if st.runtime.exists():  # Move this inside the try block
+            cleanup_session_state()
+            initialize_session_state()
+    except Exception as e:
+        logger.error(f"Error initializing session state: {str(e)}")
+        st.error(f"Error initializing session state: {str(e)}")
+        st.stop()
     
     # Validate environment
     validate_environment()
     
     # Initialize clients
+    if 'clients' not in st.session_state:
+        st.session_state.clients = {}
+
+    # Initialize Anthropic client
+    if 'anthropic' not in st.session_state.clients:
+        try:
+            st.session_state.clients['anthropic'] = anthropic.Client(
+                api_key=st.secrets["ANTHROPIC_API_KEY"]
+            )
+            logger.info("Successfully initialized Anthropic client")
+        except Exception as e:
+            st.error(f"Error initializing Anthropic client: {str(e)}")
+            st.stop()
+
+    # Initialize Qdrant client
     if 'qdrant_client' not in st.session_state:
         try:
-            # Initialize session state variables
-            if 'clients' not in st.session_state:
-                st.session_state.clients = {}
-
-            # Initialize Anthropic client
-            if 'anthropic' not in st.session_state.clients:
-                try:
-                    st.session_state.clients['anthropic'] = anthropic.Client(
-                        api_key=st.secrets["ANTHROPIC_API_KEY"]
-                    )
-                    logger.info("Successfully initialized Anthropic client")
-                except Exception as e:
-                    st.error(f"Error initializing Anthropic client: {str(e)}")
-
-            # Initialize Qdrant client
-            if 'qdrant_client' not in st.session_state:
-                try:
-                    qdrant_client = initialize_qdrant()
-                    if qdrant_client:
-                        st.session_state.clients['qdrant'] = QdrantAdapter(
-                            url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-                            api_key=st.secrets["QDRANT_API_KEY"],
-                            collection_name="documents",
-                            embedding_model=DEFAULT_EMBEDDING_MODEL,
-                            anthropic_client=st.session_state.clients.get('anthropic')
-                        )
-                        logger.info("Successfully initialized Qdrant client")
-                    else:
-                        st.error("Failed to initialize Qdrant client")
-                except Exception as e:
-                    st.error(f"Error initializing Qdrant client: {str(e)}")
-            
+            qdrant_client = initialize_qdrant()
             if qdrant_client:
-                st.session_state.qdrant_client = QdrantAdapter(
+                st.session_state.clients['qdrant'] = QdrantAdapter(
                     url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
                     api_key=st.secrets["QDRANT_API_KEY"],
                     collection_name="documents",
                     embedding_model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=st.session_state.clients['anthropic']
+                    anthropic_client=st.session_state.clients.get('anthropic')
                 )
                 logger.info("Successfully initialized Qdrant client")
             else:
                 st.error("Failed to initialize Qdrant client")
+                st.stop()
         except Exception as e:
             st.error(f"Error initializing Qdrant client: {str(e)}")
             st.stop()
-    
+
     # Start UI code
     st.title("Document Processing Pipeline")
-    
-    # Rest of UI code remains the same...
+
+    # Rest of the UI code...
 
 except Exception as e:
     st.error(f"Error during initialization: {str(e)}")
