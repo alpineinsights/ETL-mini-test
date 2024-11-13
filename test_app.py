@@ -282,39 +282,32 @@ def create_semantic_chunks(text: str) -> List[Dict[str, Any]]:
 async def process_url(url: str) -> Optional[Dict[str, Any]]:
     """Process a single URL and return chunks and metadata"""
     try:
-        # Download PDF
+        # Download and parse PDF
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
-        # Save to temp file
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             temp_file.write(response.content)
             temp_path = temp_file.name
         
-        # Parse PDF
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
             result_type="markdown"
         )
-        doc = await parser.aload_data(temp_path)
+        docs = await parser.aload_data(temp_path)
+        full_text = "\n\n".join(doc.get('text', '') for doc in docs if doc.get('text'))
         
-        # Extract metadata
-        metadata = {
-            "url": url,
-            "file_name": Path(url).name,
-            "creation_date": datetime.now().isoformat(),
-            "company": "Unknown",  # Could be extracted from URL/content
-            "date": None,
-            "fiscal_period": None
-        }
+        if not full_text:
+            raise ValueError("No text content found in document")
         
-        # Create chunks
-        chunks = create_semantic_chunks(doc.text)
+        # Extract metadata using QdrantAdapter
+        metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
+        chunks = create_semantic_chunks(full_text)
         
         return {
             "chunks": chunks,
             "metadata": metadata,
-            "text": doc.text
+            "text": full_text
         }
         
     except Exception as e:
