@@ -13,6 +13,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import uuid
 import streamlit as st
 from ratelimit import limits, sleep_and_retry
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -380,3 +381,58 @@ class QdrantAdapter:
         except Exception as e:
             logger.error(f"Error recovering collection: {str(e)}")
         return False
+
+    def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
+        """Extract metadata from document text using Claude."""
+        try:
+            # Use existing DOCUMENT_CONTEXT_PROMPT
+            response = self.anthropic_client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
+                }]
+            )
+            
+            # Parse response and extract metadata
+            try:
+                # Extract metadata from Claude's response
+                metadata = {
+                    "company": None,
+                    "date": None,
+                    "fiscal_period": None,
+                    "url": url,
+                    "file_name": Path(url).name,
+                    "creation_date": datetime.now().isoformat()
+                }
+                
+                # Parse Claude's response to extract the fields
+                response_text = response.content[0].text
+                for line in response_text.split('\n'):
+                    if line.startswith('1.') and 'company' in line.lower():
+                        metadata['company'] = line.split(':')[-1].strip()
+                    elif line.startswith('2.') and 'date' in line.lower():
+                        metadata['date'] = line.split(':')[-1].strip()
+                    elif line.startswith('3.') and 'fiscal' in line.lower():
+                        metadata['fiscal_period'] = line.split(':')[-1].strip()
+                
+                return metadata
+                
+            except Exception as e:
+                logger.warning(f"Failed to parse metadata from Claude response: {str(e)}")
+                # Fall back to filename-based metadata
+                filename = Path(url).name
+                parts = filename.replace('.pdf', '').split('_')
+                return {
+                    "company": parts[0] if len(parts) > 0 else "Unknown",
+                    "fiscal_period": parts[1] if len(parts) > 1 else None,
+                    "date": parts[3] if len(parts) > 3 else None,
+                    "url": url,
+                    "file_name": filename,
+                    "creation_date": datetime.now().isoformat()
+                }
+                
+        except Exception as e:
+            logger.error(f"Error extracting metadata: {str(e)}")
+            raise
