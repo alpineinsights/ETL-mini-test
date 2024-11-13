@@ -415,62 +415,62 @@ def display_metrics():
         )
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks concurrently while maintaining document-level context"""
-    processed_chunks = []
-    
-    async def process_single_chunk(chunk):
-        try:
-            # Generate context
-            context = await asyncio.to_thread(
-                st.session_state.clients['qdrant'].situate_context,
-                doc=full_document,
-                chunk=chunk['text']
-            )
-            context = context[0]  # Get just the context
-            st.session_state.processing_metrics['stages']['context']['success'] += 1
-
-            # Generate embedding
-            dense_vector = await asyncio.to_thread(
-                st.session_state.clients['embed_model'].get_text_embedding,
-                chunk['text']
-            )
-            st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-
-            # Store in Qdrant
-            chunk_id = f"{metadata.get('file_name', 'unknown')}_{chunks.index(chunk)}"
-            success = await asyncio.to_thread(
-                st.session_state.clients['qdrant'].upsert_chunk,
-                chunk_text=chunk['text'],
-                context_text=context,
-                dense_embedding=dense_vector,
-                metadata=metadata,
-                chunk_id=chunk_id
-            )
-            
-            if success:
-                st.session_state.processing_metrics['stages']['upserts']['success'] += 1
-                st.session_state.processing_metrics['stored_vectors'] += 1
-                return {
-                    'chunk_text': chunk['text'],
-                    'context': context,
-                    'dense_vector': dense_vector,
-                    **metadata
-                }
+    """Process chunks asynchronously with caching."""
+    try:
+        processed_chunks = []
+        
+        # Cache the document-level context for all chunks
+        doc_context_response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": "Analyze this document to understand its overall context.",
+                "cache_control": {"type": "ephemeral"}
+            }],
+            messages=[{
+                "role": "user",
+                "content": full_document[:2000]
+            }]
+        )
+        
+        for i, chunk in enumerate(chunks):
+            try:
+                # Generate context using cached document analysis
+                context = await generate_chunk_context(chunk['text'], doc_context_response)
                 
-        except Exception as e:
-            logger.error(f"Error processing chunk: {str(e)}")
-            st.session_state.processing_metrics['failed_chunks'] += 1
-            return None
-
-    # Process chunks concurrently
-    chunk_tasks = [process_single_chunk(chunk) for chunk in chunks]
-    results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
-    
-    # Filter out None results (failed chunks)
-    processed_chunks = [r for r in results if r is not None]
-    st.session_state.processing_metrics['successful_chunks'] += len(processed_chunks)
-    
-    return processed_chunks
+                # Generate embeddings
+                dense_embedding = st.session_state.clients['embed_model'].get_text_embedding(
+                    context + "\n" + chunk['text']
+                )
+                
+                # Upsert to Qdrant
+                success = st.session_state.clients['qdrant'].upsert_chunk(
+                    chunk_text=chunk['text'],
+                    context_text=context,
+                    dense_embedding=dense_embedding,
+                    metadata=metadata,
+                    chunk_id=f"{metadata['file_name']}_{i}"
+                )
+                
+                if success:
+                    st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                    processed_chunks.append({
+                        'text': chunk['text'],
+                        'context': context,
+                        'embedding': dense_embedding
+                    })
+                
+            except Exception as e:
+                logger.error(f"Error processing chunk {i}: {str(e)}")
+                st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                continue
+        
+        return processed_chunks
+        
+    except Exception as e:
+        logger.error(f"Error in process_chunks_async: {str(e)}")
+        raise
 
 # Initialize Streamlit
 # Must be first Streamlit command
