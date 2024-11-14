@@ -192,10 +192,12 @@ class QdrantAdapter:
             elif len(dense_array) > self.sparse_dim:
                 dense_array = dense_array[:self.sparse_dim]
             
+            st.session_state.processing_metrics['stages']['sparse_vectors']['success'] += 1
             return dense_array.tolist()
             
         except Exception as e:
             logger.error(f"Error computing sparse embedding: {str(e)}")
+            st.session_state.processing_metrics['stages']['sparse_vectors']['failed'] += 1
             raise
 
     @retry(
