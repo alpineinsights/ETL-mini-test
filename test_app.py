@@ -282,7 +282,7 @@ def create_semantic_chunks(text: str) -> List[Dict[str, Any]]:
 async def process_url(url: str) -> Optional[Dict[str, Any]]:
     """Process a single URL and return chunks and metadata"""
     try:
-        # Download and parse PDF
+        # Download PDF
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         
@@ -290,12 +290,20 @@ async def process_url(url: str) -> Optional[Dict[str, Any]]:
             temp_file.write(response.content)
             temp_path = temp_file.name
         
+        # Parse PDF with specific options
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            result_type="markdown"
+            result_type="markdown",
+            verbose=True,  # For debugging
+            num_workers=4,  # Optimize for cloud deployment
+            language="en"  # Specify language for better OCR
         )
+        
+        # Load and parse document
         docs = await parser.aload_data(temp_path)
-        full_text = "\n\n".join(doc.get('text', '') for doc in docs if doc.get('text'))
+        
+        # Access text directly as property
+        full_text = "\n\n".join(doc.text for doc in docs)
         
         if not full_text:
             raise ValueError("No text content found in document")
