@@ -118,12 +118,27 @@ def cleanup_session_state():
 
 def initialize_session_state():
     """Initialize all session state variables"""
+    # Processing metrics
     if 'processing_metrics' not in st.session_state:
         st.session_state.processing_metrics = metrics_template.copy()
     if 'processed_urls' not in st.session_state:
         st.session_state.processed_urls = set()
     if 'collection_name' not in st.session_state:
         st.session_state.collection_name = "documents"
+        
+    # Chunking settings
+    if 'chunk_size' not in st.session_state:
+        st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
+    if 'chunk_overlap' not in st.session_state:
+        st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
+        
+    # Model settings
+    if 'embedding_model' not in st.session_state:
+        st.session_state.embedding_model = DEFAULT_EMBEDDING_MODEL
+    if 'llm_model' not in st.session_state:
+        st.session_state.llm_model = DEFAULT_LLM_MODEL
+    if 'context_prompt' not in st.session_state:
+        st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -480,6 +495,21 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         logger.error(f"Error in process_chunks_async: {str(e)}")
         raise
 
+# After imports, before any UI code (around line 483)
+if __name__ == "__main__":
+    # Initialize Streamlit
+    st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
+    
+    # Initialize session state first
+    initialize_session_state()
+    
+    # Validate environment
+    validate_environment()
+    
+    # Initialize clients
+    if not initialize_clients():
+        st.stop()
+
 # Initialize Streamlit
 # Must be first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
@@ -579,19 +609,19 @@ with st.sidebar:
     
     # Chunking settings
     st.subheader("Chunking Settings")
-    chunk_size = st.number_input(
+    st.session_state.chunk_size = st.number_input(
         "Chunk Size",
         min_value=100,
         max_value=1000,
-        value=DEFAULT_CHUNK_SIZE,
+        value=st.session_state.chunk_size,
         help="Number of tokens per chunk (default: 500)"
     )
     
-    chunk_overlap = st.number_input(
+    st.session_state.chunk_overlap = st.number_input(
         "Chunk Overlap",
         min_value=0,
         max_value=200,
-        value=DEFAULT_CHUNK_OVERLAP,
+        value=st.session_state.chunk_overlap,
         help="Number of overlapping tokens between chunks (default: 100)"
     )
     
