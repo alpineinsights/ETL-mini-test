@@ -500,7 +500,7 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         # Update total chunks counter
         st.session_state.processing_metrics['total_chunks'] += len(chunks)
         
-        # Cache the document-level context for all chunks
+        # Cache the document-level context
         doc_context_response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
@@ -522,10 +522,13 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Generate dense embedding for chunk text
                 try:
-                    dense_embedding = st.session_state.clients['embed_model'].embed(
+                    # Get embedding result
+                    embedding_result = st.session_state.clients['embed_model'].embed(
                         [chunk['text']], 
                         model=DEFAULT_EMBEDDING_MODEL
-                    )[0]  # Get first result since embed returns a list
+                    )
+                    # Convert embedding result to list
+                    dense_embedding = embedding_result.embeddings[0].tolist()
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                 except Exception as e:
                     logger.error(f"Error generating dense embedding: {str(e)}")
@@ -735,10 +738,11 @@ with tab2:
     if query:
         try:
             # Generate query embedding
-            query_embedding = st.session_state.clients['embed_model'].embed(
+            embedding_result = st.session_state.clients['embed_model'].embed(
                 [query], 
                 model=DEFAULT_EMBEDDING_MODEL
-            )[0]  # Get first result since embed returns a list
+            )
+            query_embedding = embedding_result.embeddings[0].tolist()
             
             # Search
             results = st.session_state.clients['qdrant'].search(
