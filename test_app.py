@@ -522,12 +522,13 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Generate dense embedding for chunk text
                 try:
-                    # Get embedding result - returns a list of embeddings directly
-                    dense_embedding = st.session_state.clients['embed_model'].embed(
+                    # Get embedding result and convert to list
+                    embedding_result = st.session_state.clients['embed_model'].embed(
                         [chunk['text']], 
                         model=DEFAULT_EMBEDDING_MODEL
                     )
-                    # The result is already a list of floats, no need for additional processing
+                    # Convert the embedding result to a list - this is the key change
+                    dense_embedding = embedding_result[0].tolist()
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                 except Exception as e:
                     logger.error(f"Error generating dense embedding: {str(e)}")
