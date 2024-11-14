@@ -14,6 +14,7 @@ import uuid
 import streamlit as st
 from ratelimit import limits, sleep_and_retry
 from pathlib import Path
+from init_utils import GRPC_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +80,12 @@ class QdrantAdapter:
             anthropic_client: Initialized Anthropic client for context generation
         """
         try:
-            # Optimized gRPC configuration
-            grpc_options = {
-                'grpc.keepalive_time_ms': 10000,
-                'grpc.keepalive_timeout_ms': 5000,
-                'grpc.http2.max_pings_without_data': 0,
-                'grpc.keepalive_permit_without_calls': 1,
-                'grpc.max_receive_message_length': 100 * 1024 * 1024  # 100MB max message size
-            }
-
             self.client = QdrantClient(
                 url=url,
                 api_key=api_key,
                 timeout=60,
                 prefer_grpc=True,  # Enable gRPC
-                grpc_options=grpc_options
+                grpc_options=GRPC_OPTIONS  # Use shared configuration
             )
             self.collection_name = collection_name
             self.embedding_model = embedding_model
