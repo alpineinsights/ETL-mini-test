@@ -161,10 +161,9 @@ def initialize_clients() -> bool:
             # Initialize base clients
             qdrant_client = initialize_qdrant()
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-            embed_model = VoyageEmbedding(
-                api_key=st.secrets["VOYAGE_API_KEY"],
-                model_name=DEFAULT_EMBEDDING_MODEL
-            )
+            
+            # Initialize Voyage client directly instead of VoyageEmbedding
+            voyage_client = voyageai.Client(api_key=st.secrets["VOYAGE_API_KEY"])
             
             # Initialize QdrantAdapter
             qdrant_adapter = QdrantAdapter(
@@ -176,9 +175,9 @@ def initialize_clients() -> bool:
             )
             
             st.session_state.clients = {
-                'qdrant': qdrant_adapter,  # Use QdrantAdapter instead of raw client
+                'qdrant': qdrant_adapter,
                 'anthropic': anthropic_client,
-                'embed_model': embed_model
+                'embed_model': voyage_client  # Use Voyage client directly
             }
             
         # Validate clients
@@ -523,7 +522,10 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Generate dense embedding for chunk text
                 try:
-                    dense_embedding = st.session_state.clients['embed_model'].embed_text(chunk['text'])
+                    dense_embedding = st.session_state.clients['embed_model'].embed(
+                        [chunk['text']], 
+                        model=DEFAULT_EMBEDDING_MODEL
+                    )[0]  # Get first result since embed returns a list
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                 except Exception as e:
                     logger.error(f"Error generating dense embedding: {str(e)}")
@@ -733,7 +735,10 @@ with tab2:
     if query:
         try:
             # Generate query embedding
-            query_embedding = st.session_state.clients['embed_model'].embed_text(query)
+            query_embedding = st.session_state.clients['embed_model'].embed(
+                [query], 
+                model=DEFAULT_EMBEDDING_MODEL
+            )[0]  # Get first result since embed returns a list
             
             # Search
             results = st.session_state.clients['qdrant'].search(
