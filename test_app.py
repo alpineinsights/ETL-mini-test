@@ -153,40 +153,31 @@ def validate_environment():
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-def initialize_clients():
+def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
         if 'clients' not in st.session_state:
-            st.session_state.clients = {}
-
-        # Initialize Anthropic client
-        if 'anthropic' not in st.session_state.clients:
-            try:
-                st.session_state.clients['anthropic'] = anthropic.Client(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"]
-                )
-                logger.info("Successfully initialized Anthropic client")
-            except Exception as e:
-                st.error(f"Error initializing Anthropic client: {str(e)}")
-                return False
-
-        # Initialize Qdrant client
-        if 'qdrant_client' not in st.session_state:
-            qdrant_client = initialize_qdrant()
-            if qdrant_client:
-                st.session_state.clients['qdrant'] = QdrantAdapter(
-                    url=st.secrets.get("QDRANT_URL", DEFAULT_QDRANT_URL),
-                    api_key=st.secrets["QDRANT_API_KEY"],
-                    collection_name="documents",
-                    embedding_model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=st.session_state.clients.get('anthropic')
-                )
-                logger.info("Successfully initialized Qdrant client")
-            else:
-                st.error("Failed to initialize Qdrant client")
-                return False
-
+            st.session_state.clients = {
+                'qdrant': initialize_qdrant(),
+                'anthropic': anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"]),
+                'embed_model': VoyageEmbedding(api_key=st.secrets["VOYAGE_API_KEY"])
+            }
+            
+        # Validate clients
+        if not st.session_state.clients['qdrant']:
+            st.error("Failed to initialize Qdrant client")
+            return False
+            
+        if not st.session_state.clients['anthropic']:
+            st.error("Failed to initialize Anthropic client")
+            return False
+            
+        if not st.session_state.clients['embed_model']:
+            st.error("Failed to initialize Voyage embedding model")
+            return False
+            
         return True
+        
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
         return False
@@ -539,16 +530,14 @@ try:
         if st.runtime.exists():
             cleanup_session_state()
             initialize_session_state()
+            
+            # Initialize clients after session state
+            if not initialize_clients():
+                st.stop()
+                
     except Exception as e:
         logger.error(f"Error initializing session state: {str(e)}")
         st.error(f"Error initializing session state: {str(e)}")
-        st.stop()
-    
-    # Validate environment
-    validate_environment()
-    
-    # Initialize clients
-    if not initialize_clients():
         st.stop()
 
 except Exception as e:
