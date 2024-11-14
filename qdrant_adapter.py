@@ -396,10 +396,12 @@ class QdrantAdapter:
                 }],
                 messages=[{
                     "role": "user",
-                    "content": {
-                        "type": "text",
-                        "text": f"Document text:\n{doc_text[:2000]}"
-                    }
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Document text:\n{doc_text[:2000]}"
+                        }
+                    ]
                 }]
             )
             
@@ -458,10 +460,12 @@ class QdrantAdapter:
                 }],
                 messages=[{
                     "role": "user",
-                    "content": [{
-                        "type": "text",
-                        "text": f"Document text:\n{doc[:2000]}\n\nChunk text:\n{chunk}"
-                    }]
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Document text:\n{doc[:2000]}\n\nChunk text:\n{chunk}"
+                        }
+                    ]
                 }]
             )
             return response.content[0].text, response
