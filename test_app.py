@@ -522,13 +522,11 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Generate dense embedding for chunk text
                 try:
-                    # Get embedding result
                     embedding_result = st.session_state.clients['embed_model'].embed(
                         [chunk['text']], 
                         model=DEFAULT_EMBEDDING_MODEL
                     )
-                    # Convert embedding result to list
-                    dense_embedding = embedding_result.embeddings[0].tolist()
+                    dense_embedding = embedding_result[0]  # Remove .embeddings[0].tolist()
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                 except Exception as e:
                     logger.error(f"Error generating dense embedding: {str(e)}")
@@ -742,7 +740,7 @@ with tab2:
                 [query], 
                 model=DEFAULT_EMBEDDING_MODEL
             )
-            query_embedding = embedding_result.embeddings[0].tolist()
+            query_embedding = embedding_result[0]  # Remove .embeddings[0].tolist()
             
             # Search
             results = st.session_state.clients['qdrant'].search(
