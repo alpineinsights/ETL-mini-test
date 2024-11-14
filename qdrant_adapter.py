@@ -69,7 +69,7 @@ class QdrantAdapter:
     
     def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
         """
-        Initialize Qdrant client.
+        Initialize Qdrant client with optimized gRPC settings.
         
         Args:
             url: Qdrant server URL
@@ -79,11 +79,21 @@ class QdrantAdapter:
             anthropic_client: Initialized Anthropic client for context generation
         """
         try:
+            # Optimized gRPC configuration
+            grpc_options = {
+                'grpc.keepalive_time_ms': 10000,
+                'grpc.keepalive_timeout_ms': 5000,
+                'grpc.http2.max_pings_without_data': 0,
+                'grpc.keepalive_permit_without_calls': 1,
+                'grpc.max_receive_message_length': 100 * 1024 * 1024  # 100MB max message size
+            }
+
             self.client = QdrantClient(
                 url=url,
                 api_key=api_key,
                 timeout=60,
-                prefer_grpc=False  # Force HTTP protocol
+                prefer_grpc=True,  # Enable gRPC
+                grpc_options=grpc_options
             )
             self.collection_name = collection_name
             self.embedding_model = embedding_model
