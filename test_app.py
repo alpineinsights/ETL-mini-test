@@ -522,11 +522,12 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Generate dense embedding for chunk text
                 try:
-                    embedding_result = st.session_state.clients['embed_model'].embed(
+                    # Get embedding result - returns a list of embeddings directly
+                    dense_embedding = st.session_state.clients['embed_model'].embed(
                         [chunk['text']], 
                         model=DEFAULT_EMBEDDING_MODEL
                     )
-                    dense_embedding = embedding_result[0]  # Remove .embeddings[0].tolist()
+                    # The result is already a list of floats, no need for additional processing
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                 except Exception as e:
                     logger.error(f"Error generating dense embedding: {str(e)}")
@@ -735,14 +736,13 @@ with tab2:
     
     if query:
         try:
-            # Generate query embedding
-            embedding_result = st.session_state.clients['embed_model'].embed(
+            # Generate query embedding - returns a list of embeddings directly
+            query_embedding = st.session_state.clients['embed_model'].embed(
                 [query], 
                 model=DEFAULT_EMBEDDING_MODEL
             )
-            query_embedding = embedding_result[0]  # Remove .embeddings[0].tolist()
             
-            # Search
+            # Search using the embedding (already in correct format)
             results = st.session_state.clients['qdrant'].search(
                 query_text=query,
                 query_vector=query_embedding,
