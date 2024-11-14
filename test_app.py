@@ -157,13 +157,27 @@ def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
         if 'clients' not in st.session_state:
+            # Initialize base clients
+            qdrant_client = initialize_qdrant()
+            anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+            embed_model = VoyageEmbedding(
+                api_key=st.secrets["VOYAGE_API_KEY"],
+                model_name=DEFAULT_EMBEDDING_MODEL
+            )
+            
+            # Initialize QdrantAdapter
+            qdrant_adapter = QdrantAdapter(
+                url=st.secrets["QDRANT_URL"],
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name=st.session_state.collection_name,
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=anthropic_client
+            )
+            
             st.session_state.clients = {
-                'qdrant': initialize_qdrant(),
-                'anthropic': anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"]),
-                'embed_model': VoyageEmbedding(
-                    api_key=st.secrets["VOYAGE_API_KEY"],
-                    model_name=DEFAULT_EMBEDDING_MODEL
-                )
+                'qdrant': qdrant_adapter,  # Use QdrantAdapter instead of raw client
+                'anthropic': anthropic_client,
+                'embed_model': embed_model
             }
             
         # Validate clients
