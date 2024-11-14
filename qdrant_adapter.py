@@ -14,7 +14,6 @@ import uuid
 import streamlit as st
 from ratelimit import limits, sleep_and_retry
 from pathlib import Path
-from init_utils import get_qdrant_client, GRPC_OPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -69,43 +68,81 @@ class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
     def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
-        """Initialize Qdrant client with optimized settings."""
+        """
+        Initialize Qdrant client.
+        
+        Args:
+            url: Qdrant server URL
+            api_key: API key for authentication
+            collection_name: Name of the collection to use
+            embedding_model: Name of the embedding model to use
+            anthropic_client: Initialized Anthropic client for context generation
+        """
         try:
-            self.client = get_qdrant_client(url, api_key)
-            if self.client is None:
-                raise ValueError("Failed to initialize Qdrant client")
-                
+            self.client = QdrantClient(
+                url=url,
+                api_key=api_key,
+                timeout=60,
+                prefer_grpc=False  # Force HTTP protocol
+            )
             self.collection_name = collection_name
             self.embedding_model = embedding_model
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
-            self.sparse_dim = 100
-            self.anthropic_client = anthropic_client
+            self.sparse_dim = 100  # Reduced dimension for TF-IDF
+            self.anthropic_client = anthropic_client  # Store the Anthropic client
             
-            # Initialize collection with optimized settings
-            self._initialize_collection()
+            # Initialize TF-IDF vectorizer with reduced vocabulary size
+            self.vectorizer = TfidfVectorizer(
+                max_features=self.sparse_dim,
+                stop_words='english'
+            )
             
+            # Fit vectorizer on a sample text to initialize vocabulary
+            default_text = [
+                "company financial report earnings revenue profit loss quarter year fiscal",
+                "business market growth strategy development product service customer sales"
+            ]
+            
+            self.vectorizer.fit(default_text)
+            logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
+            
+            # More careful collection initialization
+            try:
+                info = self.client.get_collection(self.collection_name)
+                # Only check if collection exists, don't recreate
+                logger.info(f"Found existing collection: {self.collection_name}")
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    logger.info(f"Collection {self.collection_name} not found, creating...")
+                    self.create_collection()
+                else:
+                    raise
+            
+            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
-
-    def _initialize_collection(self) -> None:
-        """Initialize collection with optimized settings."""
-        try:
-            info = self.client.get_collection(self.collection_name)
-            if info.status != "green":
-                if not self.recover_collection():
-                    self.create_collection()
-        except Exception as e:
-            if "not found" in str(e).lower():
-                self.create_collection()
-            else:
-                raise
-
+        
     def create_collection(self, collection_name: Optional[str] = None) -> bool:
-        """Create collection with optimized settings."""
+        """Create collection if it doesn't exist."""
         try:
             collection_name = collection_name or self.collection_name
             
+            # Check if collection exists
+            try:
+                info = self.client.get_collection(collection_name)
+                if info.status != "green":
+                    logger.warning(f"Collection {collection_name} exists but status is {info.status}")
+                    if self.recover_collection():
+                        return True
+                    logger.warning("Recovery failed, recreating collection")
+                else:
+                    return True  # Collection exists and is healthy
+            except Exception as e:
+                if "not found" not in str(e).lower():
+                    raise
+
+            # Create collection with optimized settings
             vectors_config = {
                 "dense": models.VectorParams(
                     size=self.dense_dim,
@@ -121,12 +158,13 @@ class QdrantAdapter:
                 collection_name=collection_name,
                 vectors_config=vectors_config,
                 optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=1000,    # Batch indexing
-                    memmap_threshold=10000,     # Lower threshold for better performance
-                    max_optimization_threads=8,  # Increased threads
-                    default_segment_number=2    # Optimal for medium-sized collections
+                    indexing_threshold=0,  # Immediate indexing
+                    memmap_threshold=20000,  # Better memory management
+                    max_optimization_threads=4
                 )
             )
+            
+            logger.info(f"Created new collection {collection_name}")
             return True
             
         except Exception as e:
@@ -335,19 +373,16 @@ class QdrantAdapter:
         return rate_limited_context(self._situate_context, doc, chunk)
 
     def recover_collection(self) -> bool:
-        """Attempt to recover collection if needed."""
+        """Attempt to recover collection if in a bad state"""
         try:
             info = self.client.get_collection(self.collection_name)
             if info.status != "green":
-                logger.warning(f"Collection {self.collection_name} in {info.status} state")
-                self.client.recover_collection(
-                    collection_name=self.collection_name,
-                    timeout=300  # Increased timeout for recovery
-                )
-            return True
+                logger.warning(f"Collection {self.collection_name} in {info.status} state, attempting recovery")
+                self.client.recover_collection(self.collection_name)
+                return True
         except Exception as e:
             logger.error(f"Error recovering collection: {str(e)}")
-            return False
+        return False
 
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata from document text using Claude with prompt caching."""
