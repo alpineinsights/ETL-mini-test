@@ -495,23 +495,7 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         logger.error(f"Error in process_chunks_async: {str(e)}")
         raise
 
-# After imports, before any UI code (around line 483)
-if __name__ == "__main__":
-    # Initialize Streamlit
-    st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
-    
-    # Initialize session state first
-    initialize_session_state()
-    
-    # Validate environment
-    validate_environment()
-    
-    # Initialize clients
-    if not initialize_clients():
-        st.stop()
-
-# Initialize Streamlit
-# Must be first Streamlit command
+# Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
 # Initialize session state and validate environment
@@ -540,7 +524,8 @@ try:
 except Exception as e:
     st.error(f"Error during initialization: {str(e)}")
     st.stop()
-    # Start UI code
+
+# Start UI code
 st.title("Document Processing Pipeline")
 
 # Sidebar controls
