@@ -72,6 +72,7 @@ metrics_template = {
     'stages': {
         'context': {'success': 0, 'failed': 0},
         'dense_vectors': {'success': 0, 'failed': 0},
+        'sparse_vectors': {'success': 0, 'failed': 0},
         'upserts': {'success': 0, 'failed': 0}
     }
 }
@@ -420,6 +421,23 @@ def save_processed_urls(urls: set) -> None:
 
 def display_metrics():
     """Display current processing metrics"""
+    if st.session_state.processing_metrics['start_time']:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Documents Processed", 
+                     f"{st.session_state.processing_metrics['processed_docs']}/{st.session_state.processing_metrics['total_docs']}")
+            st.metric("Chunks Processed", 
+                     f"{st.session_state.processing_metrics['processed_chunks']}/{st.session_state.processing_metrics['total_chunks']}")
+        
+        with col2:
+            st.metric("Context Generation", 
+                     f"{st.session_state.processing_metrics['stages']['context']['success']}/{st.session_state.processing_metrics['stages']['context']['failed']} failed")
+            st.metric("Dense Vectors", 
+                     f"{st.session_state.processing_metrics['stages']['dense_vectors']['success']}/{st.session_state.processing_metrics['stages']['dense_vectors']['failed']} failed")
+            st.metric("Sparse Vectors", 
+                     f"{st.session_state.processing_metrics['stages']['sparse_vectors']['success']}/{st.session_state.processing_metrics['stages']['sparse_vectors']['failed']} failed")
+            st.metric("Upserts", 
+                     f"{st.session_state.processing_metrics['stages']['upserts']['success']}/{st.session_state.processing_metrics['stages']['upserts']['failed']} failed")
     metrics = st.session_state.processing_metrics
     
     if metrics['start_time']:
@@ -480,6 +498,9 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
     try:
         processed_chunks = []
         
+        # Update total chunks counter
+        st.session_state.processing_metrics['total_chunks'] += len(chunks)
+        
         # Cache the document-level context for all chunks
         doc_context_response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
             model=DEFAULT_LLM_MODEL,
@@ -491,36 +512,46 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
             }],
             messages=[{
                 "role": "user",
-                "content": full_document[:2000]
+                "content": [{"type": "text", "text": full_document[:2000]}]
             }]
         )
         
         for i, chunk in enumerate(chunks):
             try:
-                # Generate context using cached document analysis
-                context = await generate_chunk_context(chunk['text'], doc_context_response)
+                # Generate context
+                chunk_context = await generate_chunk_context(chunk['text'], doc_context_response)
                 
-                # Generate embeddings
-                dense_embedding = st.session_state.clients['embed_model'].get_text_embedding(
-                    context + "\n" + chunk['text']
-                )
+                # Generate dense embedding for chunk text
+                try:
+                    dense_embedding = st.session_state.clients['embed_model'].embed_query(chunk['text'])
+                    st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
+                except Exception as e:
+                    logger.error(f"Error generating dense embedding: {str(e)}")
+                    st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
+                    continue
                 
-                # Upsert to Qdrant
-                success = st.session_state.clients['qdrant'].upsert_chunk(
-                    chunk_text=chunk['text'],
-                    context_text=context,
-                    dense_embedding=dense_embedding,
-                    metadata=metadata,
-                    chunk_id=f"{metadata['file_name']}_{i}"
-                )
+                # Upsert to Qdrant with both dense and sparse vectors
+                try:
+                    success = st.session_state.clients['qdrant'].upsert_chunk(
+                        chunk_text=chunk['text'],
+                        context_text=chunk_context,
+                        dense_embedding=dense_embedding,
+                        metadata=metadata,
+                        chunk_id=str(i)
+                    )
+                    if success:
+                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                        st.session_state.processing_metrics['processed_chunks'] += 1
+                except Exception as e:
+                    logger.error(f"Error upserting chunk: {str(e)}")
+                    st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                    continue
                 
-                if success:
-                    st.session_state.processing_metrics['stages']['upserts']['success'] += 1
-                    processed_chunks.append({
-                        'text': chunk['text'],
-                        'context': context,
-                        'embedding': dense_embedding
-                    })
+                processed_chunks.append({
+                    'text': chunk['text'],
+                    'context': chunk_context,
+                    'embedding': dense_embedding
+                })
                 
             except Exception as e:
                 logger.error(f"Error processing chunk {i}: {str(e)}")
