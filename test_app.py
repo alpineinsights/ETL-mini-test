@@ -437,6 +437,36 @@ def display_metrics():
             f"{counts['success']}/{counts['success'] + counts['failed']}"
         )
 
+async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
+    """Generate context for a chunk using the cached document context."""
+    try:
+        response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": DEFAULT_CONTEXT_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
+                    }
+                ]
+            }]
+        )
+        
+        st.session_state.processing_metrics['stages']['context']['success'] += 1
+        return response.content[0].text
+        
+    except Exception as e:
+        logger.error(f"Error generating chunk context: {str(e)}")
+        st.session_state.processing_metrics['stages']['context']['failed'] += 1
+        raise
+
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
     """Process chunks asynchronously with caching."""
     try:
