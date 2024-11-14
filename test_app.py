@@ -160,7 +160,10 @@ def initialize_clients() -> bool:
             st.session_state.clients = {
                 'qdrant': initialize_qdrant(),
                 'anthropic': anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"]),
-                'embed_model': VoyageEmbedding(api_key=st.secrets["VOYAGE_API_KEY"])
+                'embed_model': VoyageEmbedding(
+                    api_key=st.secrets["VOYAGE_API_KEY"],
+                    model_name=DEFAULT_EMBEDDING_MODEL
+                )
             }
             
         # Validate clients
