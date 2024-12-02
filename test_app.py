@@ -175,7 +175,15 @@ def initialize_clients() -> bool:
                 st.write("API Key length:", len(api_key))
                 
                 # Try direct instantiation without any extra parameters
+                st.write("About to create Anthropic client...")
+                # Create a new clean instance without any extra parameters
+                api_key = st.secrets["ANTHROPIC_API_KEY"].strip()  # Remove any whitespace
+                st.write("API Key type:", type(api_key))
+                st.write("API Key length:", len(api_key))
+                
+                # Try direct instantiation without any extra parameters
                 anthropic_client = anthropic.Anthropic(api_key=api_key)
+                st.write("Anthropic client created successfully")
                 
             except Exception as e:
                 st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
@@ -188,8 +196,9 @@ def initialize_clients() -> bool:
             try:
                 voyage_embed = VoyageEmbedding(
                     model_name=DEFAULT_EMBEDDING_MODEL,
-                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
+                    voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
                 )
+                st.write("VoyageEmbedding created successfully")
             except Exception as e:
                 st.write(f"VoyageEmbedding error: {str(e)}")
                 st.write(f"VoyageEmbedding class attributes: {dir(VoyageEmbedding)}")
@@ -198,31 +207,19 @@ def initialize_clients() -> bool:
             st.write("Initializing QdrantAdapter...")
             # Initialize QdrantAdapter
             qdrant_adapter = QdrantAdapter(
-                url=st.secrets["QDRANT_URL"],
-                api_key=st.secrets["QDRANT_API_KEY"],
+                url=st.secrets["QDRANT_URL"].strip(),
+                api_key=st.secrets["QDRANT_API_KEY"].strip(),
                 collection_name=st.session_state.collection_name,
                 embedding_model=DEFAULT_EMBEDDING_MODEL,
                 anthropic_client=anthropic_client
             )
+            st.write("QdrantAdapter created successfully")
             
             st.session_state.clients = {
                 'qdrant': qdrant_adapter,
                 'anthropic': anthropic_client,
                 'embed_model': voyage_embed
             }
-            
-        # Validate clients
-        if not st.session_state.clients['qdrant']:
-            st.error("Failed to initialize Qdrant client")
-            return False
-            
-        if not st.session_state.clients['anthropic']:
-            st.error("Failed to initialize Anthropic client")
-            return False
-            
-        if not st.session_state.clients['embed_model']:
-            st.error("Failed to initialize Voyage embedding model")
-            return False
             
         return True
         
