@@ -158,16 +158,29 @@ def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
         if 'clients' not in st.session_state:
+            # Debug logging
+            st.write("Starting client initialization...")
+            
             # Initialize base clients
+            st.write("Initializing Qdrant client...")
             qdrant_client = initialize_qdrant()
+            
+            st.write("Initializing Anthropic client...")
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
-            # Initialize VoyageEmbedding from LlamaIndex instead of direct Voyage client
-            voyage_embed = VoyageEmbedding(
-                api_key=st.secrets["VOYAGE_API_KEY"],
-                model_name=DEFAULT_EMBEDDING_MODEL
-            )
+            # Initialize VoyageEmbedding from LlamaIndex
+            st.write("Initializing VoyageEmbedding...")
+            try:
+                voyage_embed = VoyageEmbedding(
+                    model_name=DEFAULT_EMBEDDING_MODEL,
+                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
+                )
+            except Exception as e:
+                st.write(f"VoyageEmbedding error: {str(e)}")
+                st.write(f"VoyageEmbedding class attributes: {dir(VoyageEmbedding)}")
+                raise
             
+            st.write("Initializing QdrantAdapter...")
             # Initialize QdrantAdapter
             qdrant_adapter = QdrantAdapter(
                 url=st.secrets["QDRANT_URL"],
