@@ -166,29 +166,24 @@ def initialize_clients() -> bool:
             qdrant_client = initialize_qdrant()
             
             st.write("Initializing Anthropic client...")
-            st.write("Anthropic secrets:", {k: "..." for k in st.secrets.keys()})  # Hide actual values
-            st.write("Anthropic Client parameters:", dir(anthropic.Anthropic))
             try:
-                # Create a new clean instance without any additional parameters
-                api_key = st.secrets["ANTHROPIC_API_KEY"]
-                st.write("API Key type:", type(api_key))
-                st.write("API Key length:", len(api_key))
-                
-                # Try direct instantiation without any extra parameters
-                st.write("About to create Anthropic client...")
-                # Create a new clean instance without any extra parameters
+                # Get API key and create clean string
                 api_key = st.secrets["ANTHROPIC_API_KEY"].strip()  # Remove any whitespace
                 st.write("API Key type:", type(api_key))
                 st.write("API Key length:", len(api_key))
+                # Show first and last 4 characters of API key
+                st.write(f"API Key format: {api_key[:4]}...{api_key[-4:]}")
                 
-                # Try direct instantiation without any extra parameters
-                anthropic_client = anthropic.Anthropic(api_key=api_key)
+                # Create a new clean instance without any extra parameters
+                anthropic_client = anthropic.Anthropic(
+                    api_key=api_key
+                )
                 st.write("Anthropic client created successfully")
                 
             except Exception as e:
                 st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
                 st.write(f"Anthropic module version: {anthropic.__version__}")
-                st.write(f"Full exception info:", e.__dict__ if hasattr(e, '__dict__') else "No additional info")
+                st.write("API key structure (first 10 chars):", repr(api_key[:10]))
                 raise
             
             # Initialize VoyageEmbedding from LlamaIndex
@@ -201,7 +196,6 @@ def initialize_clients() -> bool:
                 st.write("VoyageEmbedding created successfully")
             except Exception as e:
                 st.write(f"VoyageEmbedding error: {str(e)}")
-                st.write(f"VoyageEmbedding class attributes: {dir(VoyageEmbedding)}")
                 raise
             
             st.write("Initializing QdrantAdapter...")
