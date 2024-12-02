@@ -167,9 +167,15 @@ def initialize_clients() -> bool:
             
             st.write("Initializing Anthropic client...")
             st.write("Anthropic secrets:", {k: "..." for k in st.secrets.keys()})  # Hide actual values
-            anthropic_client = anthropic.Anthropic(
-                api_key=st.secrets["ANTHROPIC_API_KEY"]
-            )
+            st.write("Anthropic Client parameters:", dir(anthropic.Anthropic))
+            try:
+                anthropic_client = anthropic.Anthropic(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"]
+                )
+            except Exception as e:
+                st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
+                st.write(f"Anthropic module version: {anthropic.__version__}")
+                raise
             
             # Initialize VoyageEmbedding from LlamaIndex
             st.write("Initializing VoyageEmbedding...")
