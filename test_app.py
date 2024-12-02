@@ -162,8 +162,10 @@ def initialize_clients() -> bool:
             qdrant_client = initialize_qdrant()
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
-            # Initialize Voyage client directly instead of VoyageEmbedding
-            voyage_client = voyageai.Client(api_key=st.secrets["VOYAGE_API_KEY"])
+            # Initialize Voyage client without proxies
+            voyage_client = voyageai.Client(
+                api_key=st.secrets["VOYAGE_API_KEY"]
+            )
             
             # Initialize QdrantAdapter
             qdrant_adapter = QdrantAdapter(
@@ -177,7 +179,7 @@ def initialize_clients() -> bool:
             st.session_state.clients = {
                 'qdrant': qdrant_adapter,
                 'anthropic': anthropic_client,
-                'embed_model': voyage_client  # Use Voyage client directly
+                'embed_model': voyage_client
             }
             
         # Validate clients
@@ -737,11 +739,11 @@ with tab2:
     
     if query:
         try:
-            # Generate query embedding - returns a list of embeddings directly
+            # Generate query embedding - modify the client initialization
             query_embedding = st.session_state.clients['embed_model'].embed(
                 [query], 
                 model=DEFAULT_EMBEDDING_MODEL
-            )
+            ).embeddings[0]  # Access the first embedding directly
             
             # Search using the embedding (already in correct format)
             results = st.session_state.clients['qdrant'].search(
