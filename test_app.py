@@ -167,23 +167,15 @@ def initialize_clients() -> bool:
             
             st.write("Initializing Anthropic client...")
             try:
-                # Get API key and create clean string
-                api_key = st.secrets["ANTHROPIC_API_KEY"].strip()  # Remove any whitespace
-                st.write("API Key type:", type(api_key))
-                st.write("API Key length:", len(api_key))
-                # Show first and last 4 characters of API key
-                st.write(f"API Key format: {api_key[:4]}...{api_key[-4:]}")
-                
-                # Create a new clean instance without any extra parameters
+                # Create a new clean instance with the latest API version
                 anthropic_client = anthropic.Anthropic(
-                    api_key=api_key
+                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
                 )
                 st.write("Anthropic client created successfully")
                 
             except Exception as e:
                 st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
                 st.write(f"Anthropic module version: {anthropic.__version__}")
-                st.write("API key structure (first 10 chars):", repr(api_key[:10]))
                 raise
             
             # Initialize VoyageEmbedding from LlamaIndex
