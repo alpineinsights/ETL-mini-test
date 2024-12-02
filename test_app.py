@@ -166,7 +166,10 @@ def initialize_clients() -> bool:
             qdrant_client = initialize_qdrant()
             
             st.write("Initializing Anthropic client...")
-            anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+            st.write("Anthropic secrets:", {k: "..." for k in st.secrets.keys()})  # Hide actual values
+            anthropic_client = anthropic.Anthropic(
+                api_key=st.secrets["ANTHROPIC_API_KEY"]
+            )
             
             # Initialize VoyageEmbedding from LlamaIndex
             st.write("Initializing VoyageEmbedding...")
