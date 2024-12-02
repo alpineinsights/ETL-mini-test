@@ -162,12 +162,10 @@ def initialize_clients() -> bool:
             qdrant_client = initialize_qdrant()
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
-            # Debug line to print all parameters
-            st.write("Voyage Client parameters:", voyageai.Client.__init__.__code__.co_varnames)
-            
-            # Initialize Voyage client without proxies
-            voyage_client = voyageai.Client(
-                api_key=st.secrets["VOYAGE_API_KEY"]
+            # Initialize VoyageEmbedding from LlamaIndex instead of direct Voyage client
+            voyage_embed = VoyageEmbedding(
+                api_key=st.secrets["VOYAGE_API_KEY"],
+                model_name=DEFAULT_EMBEDDING_MODEL
             )
             
             # Initialize QdrantAdapter
@@ -182,7 +180,7 @@ def initialize_clients() -> bool:
             st.session_state.clients = {
                 'qdrant': qdrant_adapter,
                 'anthropic': anthropic_client,
-                'embed_model': voyage_client
+                'embed_model': voyage_embed
             }
             
         # Validate clients
