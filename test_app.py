@@ -162,6 +162,9 @@ def initialize_clients() -> bool:
             qdrant_client = initialize_qdrant()
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
+            # Debug line to print all parameters
+            st.write("Voyage Client parameters:", voyageai.Client.__init__.__code__.co_varnames)
+            
             # Initialize Voyage client without proxies
             voyage_client = voyageai.Client(
                 api_key=st.secrets["VOYAGE_API_KEY"]
