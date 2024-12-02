@@ -2,7 +2,7 @@ streamlit==1.32.2
 anthropic==0.37.1
 voyageai==0.2.4
 llama-parse==0.5.12
-qdrant-client==1.12.4
+qdrant-client>=1.12.1
 llama-index-core>=0.10.0
 llama-index-embeddings-voyageai>=0.2.1
 scikit-learn>=1.4.0
