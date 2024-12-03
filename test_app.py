@@ -131,18 +131,6 @@ def initialize_session_state():
         st.session_state.processed_urls = set()
     if not st.session_state.get('processing_metrics'):
         st.session_state.processing_metrics = {
-            'start_time': None,
-            'total_docs': 0,
-            'processed_docs': 0,
-            'total_chunks': 0,
-            'processed_chunks': 0,
-            'errors': 0,
-            'stages': {
-                'context': {'success': 0, 'failed': 0},
-                'dense_vectors': {'success': 0, 'failed': 0},
-                'sparse_vectors': {'success': 0, 'failed': 0},
-                'upserts': {'success': 0, 'failed': 0}
-            },
             'documents_processed': 0,
             'chunks_created': 0,
             'embedding_time': 0,
