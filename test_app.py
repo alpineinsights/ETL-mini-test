@@ -120,12 +120,13 @@ def cleanup_session_state():
 def initialize_session_state():
     """Initialize session state variables and clients"""
     try:
+        # Initialize clients if not already present
         if 'clients' not in st.session_state:
             st.session_state.clients = {
                 'anthropic': anthropic.Client(api_key=st.secrets["ANTHROPIC_API_KEY"]),
                 'embed_model': VoyageEmbedding(
                     model_name=DEFAULT_EMBEDDING_MODEL,
-                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]  # Correct parameter name
+                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
                 ),
                 'qdrant': QdrantAdapter(
                     url=DEFAULT_QDRANT_URL,
@@ -134,6 +135,29 @@ def initialize_session_state():
                     embedding_model=DEFAULT_EMBEDDING_MODEL
                 )
             }
+
+        # Processing metrics
+        if 'processing_metrics' not in st.session_state:
+            st.session_state.processing_metrics = metrics_template.copy()
+        if 'processed_urls' not in st.session_state:
+            st.session_state.processed_urls = set()
+        if 'collection_name' not in st.session_state:
+            st.session_state.collection_name = "documents"
+            
+        # Chunking settings
+        if 'chunk_size' not in st.session_state:
+            st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
+        if 'chunk_overlap' not in st.session_state:
+            st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
+            
+        # Model settings
+        if 'embedding_model' not in st.session_state:
+            st.session_state.embedding_model = DEFAULT_EMBEDDING_MODEL
+        if 'llm_model' not in st.session_state:
+            st.session_state.llm_model = DEFAULT_LLM_MODEL
+        if 'context_prompt' not in st.session_state:
+            st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
+
     except Exception as e:
         logger.error(f"Error initializing session state: {str(e)}")
         st.error(f"Error initializing session state: {str(e)}")
