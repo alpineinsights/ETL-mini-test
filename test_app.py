@@ -146,17 +146,22 @@ def initialize_clients() -> bool:
         
         # Initialize Anthropic client first
         st.write("Initializing Anthropic client...")
-        anthropic_client = anthropic.Client(
-            api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
-            base_url="https://api.anthropic.com/v1"  # Ensure correct base URL
-        )
+        try:
+            anthropic_client = anthropic.Client(
+                api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
+                base_url="https://api.anthropic.com/v1"  # Ensure correct base URL
+            )
+            
+            if not validate_anthropic_client(anthropic_client):
+                raise ValueError("Failed to validate Anthropic client")
+            
+            st.session_state.clients['anthropic'] = anthropic_client
+            st.write("Anthropic client created and validated successfully")
+            
+        except Exception as e:
+            st.error(f"Anthropic client initialization failed: {str(e)}")
+            raise
         
-        if not validate_anthropic_client(anthropic_client):
-            raise ValueError("Failed to validate Anthropic client")
-        
-        st.session_state.clients['anthropic'] = anthropic_client
-        st.write("Anthropic client created and validated successfully")
-
         # Then initialize Voyage
         st.write("Initializing VoyageEmbedding...")
         voyage_embed = VoyageEmbedding(
@@ -563,16 +568,21 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
 
 def validate_anthropic_client(client):
     """Validate the Anthropic client by making a test call."""
-    if not client:
-        raise ValueError("Anthropic client is not initialized")
     try:
         # Test the client with a simple call
-        client.messages.create(
+        response = client.messages.create(
             model="claude-3-haiku-20240307",
             max_tokens=10,
             messages=[{"role": "user", "content": "test"}]
         )
         return True
+    except anthropic.APIStatusError as e:
+        if e.status_code == 404:
+            raise ValueError(f"API endpoint not found. Check base_url configuration")
+        elif e.status_code == 401:
+            raise ValueError("Invalid API key")
+        else:
+            raise ValueError(f"API error: {str(e)}")
     except Exception as e:
         raise ValueError(f"Anthropic client validation failed: {str(e)}")
 
