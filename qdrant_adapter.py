@@ -387,6 +387,10 @@ class QdrantAdapter:
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata from document text using Claude with prompt caching."""
         try:
+            # Check if the client is initialized
+            if not self.anthropic_client:
+                raise ValueError("Anthropic client is not initialized.")
+            
             # Use beta prompt caching API
             response = self.anthropic_client.beta.prompt_caching.messages.create(
                 model="claude-3-haiku-20240307",
