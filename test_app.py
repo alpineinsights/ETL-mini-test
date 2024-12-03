@@ -327,34 +327,38 @@ async def process_url(url: str) -> Optional[Dict[str, Any]]:
             temp_file.write(response.content)
             temp_path = temp_file.name
         
-        # Initialize parser with fast mode
+        # Initialize parser with optimized settings
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            fast_mode=True,  # Enable fast mode for faster processing
-            num_workers=10,  # Increase number of workers
-            check_interval=5,  # Increase check interval
-            verbose=False,    # Disable verbose for better performance
-            language="en"     # Specify language
+            fast_mode=True,          # Enable fast mode for faster processing
+            num_workers=8,           # Maximum allowed workers (must be < 10)
+            check_interval=2,        # Reduced check interval for faster updates
+            verbose=False,           # Disable verbose for better performance
+            language="en",           # Specify language
+            result_type="text"       # Use text output since we're in fast mode
         )
         
-        # Load and parse document
+        # Load and parse document using asynchronous batch processing
         docs = await parser.aload_data(temp_path)
         
-        # Since fast mode doesn't generate Markdown, we'll work with raw text
-        # Join the text content from all pages
+        # Extract and clean text content
         full_text = "\n\n".join(
             getattr(doc, 'text', '') or getattr(doc, 'content', '') 
-            for doc in docs
-        )
+            for doc in docs if doc
+        ).strip()
         
         if not full_text:
             raise ValueError("No text content found in document")
         
-        # Clean up the text - you might want to add more cleaning steps
-        full_text = full_text.replace('\x00', ' ')  # Remove null bytes
-        full_text = ' '.join(full_text.split())     # Normalize whitespace
+        # Clean up the text
+        full_text = (full_text
+            .replace('\x00', ' ')    # Remove null bytes
+            .replace('\r', '\n')     # Normalize line endings
+            .replace('\t', ' ')      # Replace tabs with spaces
+        )
+        full_text = ' '.join(full_text.split())  # Normalize whitespace
         
-        # Extract metadata using QdrantAdapter
+        # Extract metadata and create chunks
         metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
         chunks = create_semantic_chunks(full_text)
         
@@ -405,7 +409,8 @@ async def process_urls_async(urls: List[str]):
     """Process multiple URLs concurrently"""
     try:
         tasks = []
-        chunk_size = 5  # Process 5 URLs at a time
+        # Reduce batch size to prevent overloading
+        chunk_size = 3  # Process 3 URLs at a time
         
         for i in range(0, len(urls), chunk_size):
             url_batch = urls[i:i + chunk_size]
@@ -414,19 +419,26 @@ async def process_urls_async(urls: List[str]):
                 for j, url in enumerate(url_batch)
             ]
             
+            # Add delay between batches to prevent rate limiting
+            if i > 0:
+                await asyncio.sleep(2)
+            
             results = await asyncio.gather(*batch_tasks, return_exceptions=True)
             
+            # Process results
             for result in results:
                 if isinstance(result, Exception):
                     logger.error(f"Batch processing error: {str(result)}")
+                    st.session_state.processing_metrics['errors'] += 1
                     continue
                 
-                if result:  # If not None
+                if result:
                     tasks.extend(result)
             
             # Update progress
             progress = min((i + chunk_size) / len(urls), 1.0)
             progress_bar.progress(progress)
+            status_text.text(f"Processed {min(i + chunk_size, len(urls))}/{len(urls)} documents")
             
     except Exception as e:
         logger.error(f"Error in async processing: {str(e)}")
