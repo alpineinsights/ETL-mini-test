@@ -180,19 +180,16 @@ def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
         if 'clients' not in st.session_state:
+            st.session_state.clients = {}  # Initialize the clients dictionary
+            
             # Debug logging
             st.write("Starting client initialization...")
             
-            # Initialize base clients
-            st.write("Initializing Qdrant client...")
-            qdrant_client = initialize_qdrant()
-            
+            # First, initialize Anthropic client
             st.write("Initializing Anthropic client...")
             try:
-                # Create Anthropic client with beta features enabled
                 anthropic_client = anthropic.Anthropic(
                     api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
-                    # Enable beta features
                     headers={
                         "anthropic-beta": "prompt-caching-2024-07-31"
                     }
@@ -202,16 +199,21 @@ def initialize_clients() -> bool:
                 
                 # Verify client is set
                 if 'anthropic' in st.session_state.clients:
-                    st.write("Anthropic client is stored in session state.")
+                    st.write("Anthropic client is stored in session state")
                 else:
-                    st.error("Anthropic client is not stored in session state.")
+                    raise ValueError("Failed to store Anthropic client in session state")
                 
             except Exception as e:
-                st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
-                st.write(f"Anthropic module version: {anthropic.__version__}")
+                st.error(f"Anthropic error details: {type(e).__name__}: {str(e)}")
                 raise
             
-            # Initialize VoyageEmbedding from LlamaIndex
+            # Then initialize Qdrant client
+            st.write("Initializing Qdrant client...")
+            qdrant_client = initialize_qdrant()
+            if not qdrant_client:
+                raise ValueError("Failed to initialize Qdrant client")
+            
+            # Initialize VoyageEmbedding
             st.write("Initializing VoyageEmbedding...")
             try:
                 voyage_embed = VoyageEmbedding(
@@ -221,20 +223,24 @@ def initialize_clients() -> bool:
                 st.session_state.clients['embed_model'] = voyage_embed
                 st.write("VoyageEmbedding created successfully")
             except Exception as e:
-                st.write(f"VoyageEmbedding error: {str(e)}")
+                st.error(f"VoyageEmbedding error: {str(e)}")
                 raise
             
+            # Finally, initialize QdrantAdapter with the Anthropic client
             st.write("Initializing QdrantAdapter...")
-            # Initialize QdrantAdapter
-            qdrant_adapter = QdrantAdapter(
-                url=st.secrets["QDRANT_URL"].strip(),
-                api_key=st.secrets["QDRANT_API_KEY"].strip(),
-                collection_name=st.session_state.collection_name,
-                embedding_model=DEFAULT_EMBEDDING_MODEL,
-                anthropic_client=anthropic_client
-            )
-            st.session_state.clients['qdrant'] = qdrant_adapter
-            st.write("QdrantAdapter created successfully")
+            try:
+                qdrant_adapter = QdrantAdapter(
+                    url=st.secrets["QDRANT_URL"].strip(),
+                    api_key=st.secrets["QDRANT_API_KEY"].strip(),
+                    collection_name=st.session_state.collection_name,
+                    embedding_model=DEFAULT_EMBEDDING_MODEL,
+                    anthropic_client=st.session_state.clients['anthropic']  # Pass the stored client
+                )
+                st.session_state.clients['qdrant'] = qdrant_adapter
+                st.write("QdrantAdapter created successfully")
+            except Exception as e:
+                st.error(f"QdrantAdapter error: {str(e)}")
+                raise
             
         return True
         
