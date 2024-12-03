@@ -68,61 +68,39 @@ class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
     def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
-        """
-        Initialize Qdrant client.
+        """Initialize Qdrant client with required dependencies."""
+        # Validate anthropic_client first
+        if anthropic_client is None:
+            raise ValueError("Anthropic client must be provided")
+        self.anthropic_client = anthropic_client
         
-        Args:
-            url: Qdrant server URL
-            api_key: API key for authentication
-            collection_name: Name of the collection to use
-            embedding_model: Name of the embedding model to use
-            anthropic_client: Initialized Anthropic client for context generation
-        """
+        # Then initialize other components
         try:
             self.client = QdrantClient(
                 url=url,
                 api_key=api_key,
                 timeout=60,
-                prefer_grpc=False  # Force HTTP protocol
+                prefer_grpc=False
             )
             self.collection_name = collection_name
             self.embedding_model = embedding_model
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
             self.sparse_dim = 100  # Reduced dimension for TF-IDF
-            self.anthropic_client = anthropic_client  # Store the Anthropic client
             
-            # Ensure the client is initialized
-            if not self.anthropic_client:
-                raise ValueError("Anthropic client is not initialized.")
-            
-            # Initialize TF-IDF vectorizer with reduced vocabulary size
+            # Initialize TF-IDF vectorizer
             self.vectorizer = TfidfVectorizer(
                 max_features=self.sparse_dim,
                 stop_words='english'
             )
             
-            # Fit vectorizer on a sample text to initialize vocabulary
+            # Fit vectorizer on sample text
             default_text = [
                 "company financial report earnings revenue profit loss quarter year fiscal",
                 "business market growth strategy development product service customer sales"
             ]
-            
             self.vectorizer.fit(default_text)
             logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
             
-            # More careful collection initialization
-            try:
-                info = self.client.get_collection(self.collection_name)
-                # Only check if collection exists, don't recreate
-                logger.info(f"Found existing collection: {self.collection_name}")
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    logger.info(f"Collection {self.collection_name} not found, creating...")
-                    self.create_collection()
-                else:
-                    raise
-            
-            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
