@@ -463,18 +463,38 @@ def save_processed_urls(urls: set) -> None:
 def display_metrics():
     """Display current processing metrics"""
     metrics = st.session_state.processing_metrics
-    if metrics.get('start_time'):  # Use .get() for safe access
+    
+    # Display overall progress
+    if metrics.get('total_docs', 0) > 0:
+        progress = metrics['processed_docs'] / metrics['total_docs']
+        st.progress(progress)
+        st.write(f"Processed {metrics['processed_docs']} of {metrics['total_docs']} documents")
+
+    # Display stage-specific metrics
+    if metrics.get('stages'):
+        st.subheader("Processing Stages")
+        cols = st.columns(4)
+        
+        for idx, (stage, data) in enumerate(metrics['stages'].items()):
+            with cols[idx]:
+                total = data['success'] + data['failed']
+                if total > 0:
+                    success_rate = (data['success'] / total) * 100
+                    st.metric(
+                        f"{stage.title()}",
+                        f"{success_rate:.1f}%",
+                        help=f"Success: {data['success']}, Failed: {data['failed']}"
+                    )
+
+    # Display detailed metrics
+    if metrics.get('start_time'):
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Documents Processed", 
-                     metrics['documents_processed'])
-            st.metric("Chunks Created", 
-                     metrics['chunks_created'])
+            st.metric("Documents Processed", metrics['documents_processed'])
+            st.metric("Chunks Created", metrics['chunks_created'])
         with col2:
-            st.metric("Total Tokens", 
-                     metrics['total_tokens'])
-            st.metric("Embedding Time (s)", 
-                     round(metrics['embedding_time'], 2))
+            st.metric("Total Tokens", metrics['total_tokens'])
+            st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
     """Generate context for a chunk using the cached document context."""
