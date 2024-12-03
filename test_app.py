@@ -200,6 +200,12 @@ def initialize_clients() -> bool:
                 st.session_state.clients['anthropic'] = anthropic_client
                 st.write("Anthropic client created successfully")
                 
+                # Verify client is set
+                if 'anthropic' in st.session_state.clients:
+                    st.write("Anthropic client is stored in session state.")
+                else:
+                    st.error("Anthropic client is not stored in session state.")
+                
             except Exception as e:
                 st.write(f"Anthropic error details: {type(e).__name__}: {str(e)}")
                 st.write(f"Anthropic module version: {anthropic.__version__}")
