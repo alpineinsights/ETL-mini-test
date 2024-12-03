@@ -218,6 +218,7 @@ def initialize_clients() -> bool:
                     model_name=DEFAULT_EMBEDDING_MODEL,
                     voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
                 )
+                st.session_state.clients['embed_model'] = voyage_embed
                 st.write("VoyageEmbedding created successfully")
             except Exception as e:
                 st.write(f"VoyageEmbedding error: {str(e)}")
