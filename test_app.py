@@ -119,9 +119,9 @@ def cleanup_session_state():
 
 def initialize_session_state():
     """Initialize session state variables."""
-    if 'clients' not in st.session_state:
+    if not st.session_state.get('clients'):
         st.session_state.clients = {}
-    if 'collection_name' not in st.session_state:
+    if not st.session_state.get('collection_name'):
         st.session_state.collection_name = "documents"
 
 def validate_environment():
@@ -138,55 +138,37 @@ def validate_environment():
         st.stop()
 
 def initialize_clients() -> bool:
-    """Initialize all required clients"""
+    """Initialize all required clients in the correct order."""
     try:
-        # Ensure session state is initialized
-        initialize_session_state()
-        
-        # Initialize Anthropic client first
+        # First initialize Anthropic
         st.write("Initializing Anthropic client...")
-        try:
-            anthropic_client = anthropic.Client(
-                api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
-            )
-            st.session_state.clients['anthropic'] = anthropic_client
-            st.write("Anthropic client created successfully")
-        except Exception as e:
-            st.error(f"Anthropic error details: {type(e).__name__}: {str(e)}")
-            raise
-        
-        # Initialize VoyageEmbedding
+        anthropic_client = anthropic.Client(
+            api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
+        )
+        st.session_state.clients['anthropic'] = anthropic_client
+        st.write("Anthropic client created successfully")
+
+        # Then initialize Voyage
         st.write("Initializing VoyageEmbedding...")
-        try:
-            voyage_embed = VoyageEmbedding(
-                model_name=DEFAULT_EMBEDDING_MODEL,
-                voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
-            )
-            st.session_state.clients['embed_model'] = voyage_embed
-            st.write("VoyageEmbedding created successfully")
-        except Exception as e:
-            st.error(f"VoyageEmbedding error: {str(e)}")
-            raise
-        
-        # Initialize QdrantAdapter last
+        voyage_embed = VoyageEmbedding(
+            model_name=DEFAULT_EMBEDDING_MODEL,
+            voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
+        )
+        st.session_state.clients['embed_model'] = voyage_embed
+        st.write("VoyageEmbedding created successfully")
+
+        # Initialize QdrantAdapter last with the anthropic client
         st.write("Initializing QdrantAdapter...")
-        try:
-            if 'anthropic' not in st.session_state.clients:
-                raise ValueError("Anthropic client must be initialized first")
-            
-            qdrant_adapter = QdrantAdapter(
-                url=st.secrets["QDRANT_URL"].strip(),
-                api_key=st.secrets["QDRANT_API_KEY"].strip(),
-                collection_name=st.session_state.collection_name,
-                embedding_model=DEFAULT_EMBEDDING_MODEL,
-                anthropic_client=st.session_state.clients['anthropic']
-            )
-            st.session_state.clients['qdrant'] = qdrant_adapter
-            st.write("QdrantAdapter created successfully")
-        except Exception as e:
-            st.error(f"QdrantAdapter error: {str(e)}")
-            raise
-        
+        qdrant_adapter = QdrantAdapter(
+            url=st.secrets["QDRANT_URL"].strip(),
+            api_key=st.secrets["QDRANT_API_KEY"].strip(),
+            collection_name=st.session_state.collection_name,
+            embedding_model=DEFAULT_EMBEDDING_MODEL,
+            anthropic_client=st.session_state.clients['anthropic']
+        )
+        st.session_state.clients['qdrant'] = qdrant_adapter
+        st.write("QdrantAdapter created successfully")
+
         return validate_clients()
         
     except Exception as e:
@@ -194,11 +176,11 @@ def initialize_clients() -> bool:
         return False
 
 def validate_clients():
-    """Validate that all required clients are initialized"""
-    if 'clients' not in st.session_state:
+    """Validate that all required clients are initialized."""
+    if not st.session_state.get('clients'):
         return False
-    required_clients = ['anthropic', 'embed_model', 'qdrant']
-    return all(client in st.session_state.clients for client in required_clients)
+    return all(client in st.session_state.clients 
+              for client in ['anthropic', 'embed_model', 'qdrant'])
 
 # Processing Functions
 def count_tokens(text: str) -> int:
