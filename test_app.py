@@ -131,6 +131,18 @@ def initialize_session_state():
         st.session_state.processed_urls = set()
     if not st.session_state.get('processing_metrics'):
         st.session_state.processing_metrics = {
+            'start_time': None,
+            'total_docs': 0,
+            'processed_docs': 0,
+            'total_chunks': 0,
+            'processed_chunks': 0,
+            'errors': 0,
+            'stages': {
+                'context': {'success': 0, 'failed': 0},
+                'dense_vectors': {'success': 0, 'failed': 0},
+                'sparse_vectors': {'success': 0, 'failed': 0},
+                'upserts': {'success': 0, 'failed': 0}
+            },
             'documents_processed': 0,
             'chunks_created': 0,
             'embedding_time': 0,
@@ -403,42 +415,22 @@ async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[
 async def process_urls_async(urls: List[str]):
     """Process multiple URLs concurrently"""
     try:
-        tasks = []
-        # Reduce batch size to prevent overloading
-        chunk_size = 3  # Process 3 URLs at a time
-        
-        for i in range(0, len(urls), chunk_size):
-            url_batch = urls[i:i + chunk_size]
-            batch_tasks = [
-                process_single_url(url, i + j, len(urls)) 
-                for j, url in enumerate(url_batch)
-            ]
-            
-            # Add delay between batches to prevent rate limiting
-            if i > 0:
-                await asyncio.sleep(2)
-            
-            results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            
-            # Process results
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Batch processing error: {str(result)}")
-                    st.session_state.processing_metrics['errors'] += 1
-                    continue
-                
-                if result:
-                    tasks.extend(result)
-            
-            # Update progress
-            progress = min((i + chunk_size) / len(urls), 1.0)
-            progress_bar.progress(progress)
-            status_text.text(f"Processed {min(i + chunk_size, len(urls))}/{len(urls)} documents")
-            
+        st.session_state.processing_metrics['total_docs'] = len(urls)
+        st.session_state.processing_metrics['total_chunks'] = 0
+        st.session_state.processing_metrics['errors'] = 0
+
+        # Process each URL
+        for url in urls:
+            try:
+                # Process the URL and update metrics
+                chunks = create_semantic_chunks(url)
+                st.session_state.processing_metrics['total_chunks'] += len(chunks)
+                st.session_state.processing_metrics['processed_docs'] += 1
+            except Exception as e:
+                st.session_state.processing_metrics['errors'] += 1
+                st.error(f"Error processing URL {url}: {str(e)}")
     except Exception as e:
-        logger.error(f"Error in async processing: {str(e)}")
-        st.error(f"Processing error: {str(e)}")
-        raise
+        st.error(f"Batch processing error: {str(e)}")
 
 def save_processed_urls(urls: set) -> None:
     """Save processed URLs to persistent storage"""
