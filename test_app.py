@@ -327,23 +327,32 @@ async def process_url(url: str) -> Optional[Dict[str, Any]]:
             temp_file.write(response.content)
             temp_path = temp_file.name
         
-        # Parse PDF with specific options
+        # Initialize parser with fast mode
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            result_type="markdown",
-            verbose=True,  # For debugging
-            num_workers=4,  # Optimize for cloud deployment
-            language="en"  # Specify language for better OCR
+            fast_mode=True,  # Enable fast mode for faster processing
+            num_workers=10,  # Increase number of workers
+            check_interval=5,  # Increase check interval
+            verbose=False,    # Disable verbose for better performance
+            language="en"     # Specify language
         )
         
         # Load and parse document
         docs = await parser.aload_data(temp_path)
         
-        # Access text directly as property
-        full_text = "\n\n".join(doc.text for doc in docs)
+        # Since fast mode doesn't generate Markdown, we'll work with raw text
+        # Join the text content from all pages
+        full_text = "\n\n".join(
+            getattr(doc, 'text', '') or getattr(doc, 'content', '') 
+            for doc in docs
+        )
         
         if not full_text:
             raise ValueError("No text content found in document")
+        
+        # Clean up the text - you might want to add more cleaning steps
+        full_text = full_text.replace('\x00', ' ')  # Remove null bytes
+        full_text = ' '.join(full_text.split())     # Normalize whitespace
         
         # Extract metadata using QdrantAdapter
         metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
