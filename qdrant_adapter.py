@@ -91,6 +91,10 @@ class QdrantAdapter:
             self.sparse_dim = 100  # Reduced dimension for TF-IDF
             self.anthropic_client = anthropic_client  # Store the Anthropic client
             
+            # Ensure the client is initialized
+            if not self.anthropic_client:
+                raise ValueError("Anthropic client is not initialized.")
+            
             # Initialize TF-IDF vectorizer with reduced vocabulary size
             self.vectorizer = TfidfVectorizer(
                 max_features=self.sparse_dim,
