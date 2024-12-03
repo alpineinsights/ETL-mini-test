@@ -197,6 +197,7 @@ def initialize_clients() -> bool:
                         "anthropic-beta": "prompt-caching-2024-07-31"
                     }
                 )
+                st.session_state.clients['anthropic'] = anthropic_client
                 st.write("Anthropic client created successfully")
                 
             except Exception as e:
@@ -225,13 +226,8 @@ def initialize_clients() -> bool:
                 embedding_model=DEFAULT_EMBEDDING_MODEL,
                 anthropic_client=anthropic_client
             )
+            st.session_state.clients['qdrant'] = qdrant_adapter
             st.write("QdrantAdapter created successfully")
-            
-            st.session_state.clients = {
-                'qdrant': qdrant_adapter,
-                'anthropic': anthropic_client,
-                'embed_model': voyage_embed
-            }
             
         return True
         
