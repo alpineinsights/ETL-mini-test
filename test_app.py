@@ -140,13 +140,22 @@ def validate_environment():
 def initialize_clients() -> bool:
     """Initialize all required clients in the correct order."""
     try:
-        # First initialize Anthropic
+        # First validate environment
+        if not st.secrets.get("ANTHROPIC_API_KEY"):
+            raise ValueError("ANTHROPIC_API_KEY not found in secrets")
+        
+        # Initialize Anthropic client first
         st.write("Initializing Anthropic client...")
         anthropic_client = anthropic.Client(
-            api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
+            api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
+            base_url="https://api.anthropic.com/v1"  # Ensure correct base URL
         )
+        
+        if not validate_anthropic_client(anthropic_client):
+            raise ValueError("Failed to validate Anthropic client")
+        
         st.session_state.clients['anthropic'] = anthropic_client
-        st.write("Anthropic client created successfully")
+        st.write("Anthropic client created and validated successfully")
 
         # Then initialize Voyage
         st.write("Initializing VoyageEmbedding...")
@@ -551,6 +560,21 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
     except Exception as e:
         logger.error(f"Error in process_chunks_async: {str(e)}")
         raise
+
+def validate_anthropic_client(client):
+    """Validate the Anthropic client by making a test call."""
+    if not client:
+        raise ValueError("Anthropic client is not initialized")
+    try:
+        # Test the client with a simple call
+        client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "test"}]
+        )
+        return True
+    except Exception as e:
+        raise ValueError(f"Anthropic client validation failed: {str(e)}")
 
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
