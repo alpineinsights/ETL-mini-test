@@ -118,50 +118,11 @@ def cleanup_session_state():
         logger.error(f"Error in cleanup: {str(e)}")
 
 def initialize_session_state():
-    """Initialize session state variables and clients"""
-    try:
-        # Initialize clients if not already present
-        if 'clients' not in st.session_state:
-            st.session_state.clients = {
-                'anthropic': anthropic.Client(api_key=st.secrets["ANTHROPIC_API_KEY"]),
-                'embed_model': VoyageEmbedding(
-                    model_name=DEFAULT_EMBEDDING_MODEL,
-                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
-                ),
-                'qdrant': QdrantAdapter(
-                    url=DEFAULT_QDRANT_URL,
-                    api_key=st.secrets["QDRANT_API_KEY"],
-                    collection_name="documents",
-                    embedding_model=DEFAULT_EMBEDDING_MODEL
-                )
-            }
-
-        # Processing metrics
-        if 'processing_metrics' not in st.session_state:
-            st.session_state.processing_metrics = metrics_template.copy()
-        if 'processed_urls' not in st.session_state:
-            st.session_state.processed_urls = set()
-        if 'collection_name' not in st.session_state:
-            st.session_state.collection_name = "documents"
-            
-        # Chunking settings
-        if 'chunk_size' not in st.session_state:
-            st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
-        if 'chunk_overlap' not in st.session_state:
-            st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
-            
-        # Model settings
-        if 'embedding_model' not in st.session_state:
-            st.session_state.embedding_model = DEFAULT_EMBEDDING_MODEL
-        if 'llm_model' not in st.session_state:
-            st.session_state.llm_model = DEFAULT_LLM_MODEL
-        if 'context_prompt' not in st.session_state:
-            st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
-
-    except Exception as e:
-        logger.error(f"Error initializing session state: {str(e)}")
-        st.error(f"Error initializing session state: {str(e)}")
-        st.stop()
+    """Initialize session state variables."""
+    if 'clients' not in st.session_state:
+        st.session_state.clients = {}
+    if 'collection_name' not in st.session_state:
+        st.session_state.collection_name = "documents"
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -179,68 +140,53 @@ def validate_environment():
 def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
-        if 'clients' not in st.session_state:
-            st.session_state.clients = {}  # Initialize the clients dictionary
+        # Ensure session state is initialized
+        initialize_session_state()
+        
+        # Initialize Anthropic client first
+        st.write("Initializing Anthropic client...")
+        try:
+            anthropic_client = anthropic.Client(
+                api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
+            )
+            st.session_state.clients['anthropic'] = anthropic_client
+            st.write("Anthropic client created successfully")
+        except Exception as e:
+            st.error(f"Anthropic error details: {type(e).__name__}: {str(e)}")
+            raise
+        
+        # Initialize VoyageEmbedding
+        st.write("Initializing VoyageEmbedding...")
+        try:
+            voyage_embed = VoyageEmbedding(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
+            )
+            st.session_state.clients['embed_model'] = voyage_embed
+            st.write("VoyageEmbedding created successfully")
+        except Exception as e:
+            st.error(f"VoyageEmbedding error: {str(e)}")
+            raise
+        
+        # Initialize QdrantAdapter last
+        st.write("Initializing QdrantAdapter...")
+        try:
+            if 'anthropic' not in st.session_state.clients:
+                raise ValueError("Anthropic client must be initialized first")
             
-            # Debug logging
-            st.write("Starting client initialization...")
-            
-            # First, initialize Anthropic client correctly
-            st.write("Initializing Anthropic client...")
-            try:
-                # Use Client instead of Anthropic
-                anthropic_client = anthropic.Client(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
-                )
-                st.session_state.clients['anthropic'] = anthropic_client
-                st.write("Anthropic client created successfully")
-                
-                # Verify client is set
-                if 'anthropic' not in st.session_state.clients:
-                    raise ValueError("Failed to store Anthropic client in session state")
-                
-            except Exception as e:
-                st.error(f"Anthropic error details: {type(e).__name__}: {str(e)}")
-                raise
-            
-            # Initialize VoyageEmbedding
-            st.write("Initializing VoyageEmbedding...")
-            try:
-                voyage_embed = VoyageEmbedding(
-                    model_name=DEFAULT_EMBEDDING_MODEL,
-                    voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
-                )
-                st.session_state.clients['embed_model'] = voyage_embed
-                st.write("VoyageEmbedding created successfully")
-            except Exception as e:
-                st.error(f"VoyageEmbedding error: {str(e)}")
-                raise
-            
-            # Then initialize Qdrant client
-            st.write("Initializing Qdrant client...")
-            qdrant_client = initialize_qdrant()
-            if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
-            
-            # Finally, initialize QdrantAdapter with the Anthropic client
-            st.write("Initializing QdrantAdapter...")
-            try:
-                if 'anthropic' not in st.session_state.clients:
-                    raise ValueError("Anthropic client must be initialized first")
-                
-                qdrant_adapter = QdrantAdapter(
-                    url=st.secrets["QDRANT_URL"].strip(),
-                    api_key=st.secrets["QDRANT_API_KEY"].strip(),
-                    collection_name=st.session_state.collection_name,
-                    embedding_model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=st.session_state.clients['anthropic']
-                )
-                st.session_state.clients['qdrant'] = qdrant_adapter
-                st.write("QdrantAdapter created successfully")
-            except Exception as e:
-                st.error(f"QdrantAdapter error: {str(e)}")
-                raise
-            
+            qdrant_adapter = QdrantAdapter(
+                url=st.secrets["QDRANT_URL"].strip(),
+                api_key=st.secrets["QDRANT_API_KEY"].strip(),
+                collection_name=st.session_state.collection_name,
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=st.session_state.clients['anthropic']
+            )
+            st.session_state.clients['qdrant'] = qdrant_adapter
+            st.write("QdrantAdapter created successfully")
+        except Exception as e:
+            st.error(f"QdrantAdapter error: {str(e)}")
+            raise
+        
         return validate_clients()
         
     except Exception as e:
