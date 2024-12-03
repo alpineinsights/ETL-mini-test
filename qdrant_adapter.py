@@ -387,7 +387,7 @@ class QdrantAdapter:
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata from document text using Claude with prompt caching."""
         try:
-            # Use prompt caching for document-level analysis
+            # Use beta prompt caching API
             response = self.anthropic_client.beta.prompt_caching.messages.create(
                 model="claude-3-haiku-20240307",
                 max_tokens=300,
@@ -398,12 +398,10 @@ class QdrantAdapter:
                 }],
                 messages=[{
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Document text:\n{doc_text[:2000]}"
-                        }
-                    ]
+                    "content": [{
+                        "type": "text",
+                        "text": f"Document text:\n{doc_text[:2000]}"
+                    }]
                 }]
             )
             
@@ -462,12 +460,10 @@ class QdrantAdapter:
                 }],
                 messages=[{
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Document text:\n{doc[:2000]}\n\nChunk text:\n{chunk}"
-                        }
-                    ]
+                    "content": [{
+                        "type": "text",
+                        "text": f"Document text:\n{doc[:2000]}\n\nChunk text:\n{chunk}"
+                    }]
                 }]
             )
             return response.content[0].text, response
