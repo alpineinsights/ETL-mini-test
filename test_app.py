@@ -118,11 +118,24 @@ def cleanup_session_state():
         logger.error(f"Error in cleanup: {str(e)}")
 
 def initialize_session_state():
-    """Initialize session state variables."""
+    """Initialize all session state variables with default values."""
     if not st.session_state.get('clients'):
         st.session_state.clients = {}
     if not st.session_state.get('collection_name'):
         st.session_state.collection_name = "documents"
+    if not st.session_state.get('chunk_size'):
+        st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
+    if not st.session_state.get('chunk_overlap'):
+        st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
+    if not st.session_state.get('processed_urls'):
+        st.session_state.processed_urls = set()
+    if not st.session_state.get('processing_metrics'):
+        st.session_state.processing_metrics = {
+            'documents_processed': 0,
+            'chunks_created': 0,
+            'embedding_time': 0,
+            'total_tokens': 0
+        }
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -682,19 +695,21 @@ with st.sidebar:
     
     # Chunking settings
     st.subheader("Chunking Settings")
-    st.session_state.chunk_size = st.number_input(
+    chunk_size = st.number_input(
         "Chunk Size",
         min_value=100,
         max_value=1000,
-        value=st.session_state.chunk_size,
+        value=DEFAULT_CHUNK_SIZE,  # Use default value initially
+        key='chunk_size',  # This will automatically handle session state
         help="Number of tokens per chunk (default: 500)"
     )
     
-    st.session_state.chunk_overlap = st.number_input(
+    chunk_overlap = st.number_input(
         "Chunk Overlap",
         min_value=0,
-        max_value=200,
-        value=st.session_state.chunk_overlap,
+        max_value=500,
+        value=DEFAULT_CHUNK_OVERLAP,  # Use default value initially
+        key='chunk_overlap',  # This will automatically handle session state
         help="Number of overlapping tokens between chunks (default: 100)"
     )
     
