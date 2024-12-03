@@ -131,6 +131,18 @@ def initialize_session_state():
         st.session_state.processed_urls = set()
     if not st.session_state.get('processing_metrics'):
         st.session_state.processing_metrics = {
+            'start_time': None,
+            'total_docs': 0,
+            'processed_docs': 0,
+            'total_chunks': 0,
+            'processed_chunks': 0,
+            'errors': 0,
+            'stages': {
+                'context': {'success': 0, 'failed': 0},
+                'dense_vectors': {'success': 0, 'failed': 0},
+                'sparse_vectors': {'success': 0, 'failed': 0},
+                'upserts': {'success': 0, 'failed': 0}
+            },
             'documents_processed': 0,
             'chunks_created': 0,
             'embedding_time': 0,
@@ -450,47 +462,19 @@ def save_processed_urls(urls: set) -> None:
 
 def display_metrics():
     """Display current processing metrics"""
-    if st.session_state.processing_metrics['start_time']:
+    metrics = st.session_state.processing_metrics
+    if metrics.get('start_time'):  # Use .get() for safe access
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Documents Processed", 
-                     f"{st.session_state.processing_metrics['processed_docs']}/{st.session_state.processing_metrics['total_docs']}")
-            st.metric("Chunks Processed", 
-                     f"{st.session_state.processing_metrics['processed_chunks']}/{st.session_state.processing_metrics['total_chunks']}")
-        
+                     metrics['documents_processed'])
+            st.metric("Chunks Created", 
+                     metrics['chunks_created'])
         with col2:
-            st.metric("Context Generation", 
-                     f"{st.session_state.processing_metrics['stages']['context']['success']}/{st.session_state.processing_metrics['stages']['context']['failed']} failed")
-            st.metric("Dense Vectors", 
-                     f"{st.session_state.processing_metrics['stages']['dense_vectors']['success']}/{st.session_state.processing_metrics['stages']['dense_vectors']['failed']} failed")
-            st.metric("Sparse Vectors", 
-                     f"{st.session_state.processing_metrics['stages']['sparse_vectors']['success']}/{st.session_state.processing_metrics['stages']['sparse_vectors']['failed']} failed")
-            st.metric("Upserts", 
-                     f"{st.session_state.processing_metrics['stages']['upserts']['success']}/{st.session_state.processing_metrics['stages']['upserts']['failed']} failed")
-    metrics = st.session_state.processing_metrics
-    
-    if metrics['start_time']:
-        elapsed_time = datetime.now() - metrics['start_time']
-        st.metric("Elapsed Time", f"{elapsed_time.seconds} seconds")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Documents", f"{metrics['processed_docs']}/{metrics['total_docs']}")
-    with col2:
-        st.metric("Chunks", f"{metrics['processed_chunks']}/{metrics['total_chunks']}")
-    with col3:
-        st.metric("Errors", metrics['errors'])
-    
-    # Stage metrics
-    st.subheader("Processing Stages")
-    for stage, counts in metrics['stages'].items():
-        success_rate = counts['success'] / (counts['success'] + counts['failed']) * 100 if counts['success'] + counts['failed'] > 0 else 0
-        st.metric(
-            f"{stage.title()} Success Rate", 
-            f"{success_rate:.1f}%",
-            f"{counts['success']}/{counts['success'] + counts['failed']}"
-        )
+            st.metric("Total Tokens", 
+                     metrics['total_tokens'])
+            st.metric("Embedding Time (s)", 
+                     round(metrics['embedding_time'], 2))
 
 async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
     """Generate context for a chunk using the cached document context."""
