@@ -413,22 +413,47 @@ async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[
         return None
 
 async def process_urls_async(urls: List[str]):
-    """Process multiple URLs concurrently"""
     try:
-        st.session_state.processing_metrics['total_docs'] = len(urls)
-        st.session_state.processing_metrics['total_chunks'] = 0
-        st.session_state.processing_metrics['errors'] = 0
-
-        # Process each URL
-        for url in urls:
+        # Initialize metrics at start
+        st.session_state.processing_metrics = {
+            'start_time': datetime.now(),
+            'total_docs': len(urls),
+            'processed_docs': 0,
+            'total_chunks': 0,
+            'processed_chunks': 0,
+            'documents_processed': 0,
+            'chunks_created': 0,
+            'embedding_time': 0,
+            'total_tokens': 0
+        }
+        
+        # Create progress indicators
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Process each URL with proper metrics updates
+        for idx, url in enumerate(urls):
             try:
-                # Process the URL and update metrics
-                chunks = create_semantic_chunks(url)
-                st.session_state.processing_metrics['total_chunks'] += len(chunks)
-                st.session_state.processing_metrics['processed_docs'] += 1
+                result = await process_url(url)
+                if result:
+                    st.session_state.processing_metrics['processed_docs'] += 1
+                    st.session_state.processing_metrics['chunks_created'] += len(result['chunks'])
+                    st.session_state.processing_metrics['total_tokens'] += sum(len(chunk['text'].split()) for chunk in result['chunks'])
+                    st.session_state.processing_metrics['embedding_time'] += result.get('embedding_time', 0)
+                    
+                # Update progress
+                progress = (idx + 1) / len(urls)
+                progress_bar.progress(progress)
+                status_text.text(f"Processed {idx + 1}/{len(urls)} documents")
+                
             except Exception as e:
-                st.session_state.processing_metrics['errors'] += 1
                 st.error(f"Error processing URL {url}: {str(e)}")
+                continue
+        
+        # Final update to indicate completion
+        progress_bar.progress(1.0)
+        status_text.text("Processing complete!")
+                
     except Exception as e:
         st.error(f"Batch processing error: {str(e)}")
 
