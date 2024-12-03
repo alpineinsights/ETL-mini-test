@@ -118,28 +118,26 @@ def cleanup_session_state():
         logger.error(f"Error in cleanup: {str(e)}")
 
 def initialize_session_state():
-    """Initialize all session state variables"""
-    # Processing metrics
-    if 'processing_metrics' not in st.session_state:
-        st.session_state.processing_metrics = metrics_template.copy()
-    if 'processed_urls' not in st.session_state:
-        st.session_state.processed_urls = set()
-    if 'collection_name' not in st.session_state:
-        st.session_state.collection_name = "documents"
-        
-    # Chunking settings
-    if 'chunk_size' not in st.session_state:
-        st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
-    if 'chunk_overlap' not in st.session_state:
-        st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
-        
-    # Model settings
-    if 'embedding_model' not in st.session_state:
-        st.session_state.embedding_model = DEFAULT_EMBEDDING_MODEL
-    if 'llm_model' not in st.session_state:
-        st.session_state.llm_model = DEFAULT_LLM_MODEL
-    if 'context_prompt' not in st.session_state:
-        st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
+    """Initialize session state variables and clients"""
+    try:
+        if 'clients' not in st.session_state:
+            st.session_state.clients = {
+                'anthropic': anthropic.Client(api_key=st.secrets["ANTHROPIC_API_KEY"]),
+                'embed_model': VoyageEmbedding(
+                    model_name=DEFAULT_EMBEDDING_MODEL,
+                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]  # Correct parameter name
+                ),
+                'qdrant': QdrantAdapter(
+                    url=DEFAULT_QDRANT_URL,
+                    api_key=st.secrets["QDRANT_API_KEY"],
+                    collection_name="documents",
+                    embedding_model=DEFAULT_EMBEDDING_MODEL
+                )
+            }
+    except Exception as e:
+        logger.error(f"Error initializing session state: {str(e)}")
+        st.error(f"Error initializing session state: {str(e)}")
+        st.stop()
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -528,51 +526,31 @@ async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> 
         raise
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with caching."""
     try:
         processed_chunks = []
         
-        # Update total chunks counter
-        st.session_state.processing_metrics['total_chunks'] += len(chunks)
-        
-        # Cache the document-level context
-        doc_context_response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
-            model=DEFAULT_LLM_MODEL,
-            max_tokens=300,
-            system=[{
-                "type": "text",
-                "text": "Analyze this document to understand its overall context.",
-                "cache_control": {"type": "ephemeral"}
-            }],
-            messages=[{
-                "role": "user",
-                "content": [{"type": "text", "text": full_document[:2000]}]
-            }]
-        )
-        
-        for i, chunk in enumerate(chunks):
+        # Batch process embeddings
+        chunk_texts = [chunk['text'] for chunk in chunks]
+        try:
+            # Generate dense embeddings using correct method
+            dense_embeddings = st.session_state.clients['embed_model'].get_text_embedding_batch(
+                chunk_texts
+            )
+            st.session_state.processing_metrics['stages']['dense_vectors']['success'] += len(chunk_texts)
+        except Exception as e:
+            logger.error(f"Error generating dense embeddings: {str(e)}")
+            st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += len(chunk_texts)
+            raise
+
+        # Process each chunk with its corresponding embedding
+        for i, (chunk, dense_embedding) in enumerate(zip(chunks, dense_embeddings)):
             try:
-                # Generate context
-                chunk_context = await generate_chunk_context(chunk['text'], doc_context_response)
-                
-                # Generate dense embedding for chunk text
-                try:
-                    # Get embedding result and access the embedding values directly
-                    embedding_result = st.session_state.clients['embed_model'].embed(
-                        [chunk['text']], 
-                        model=DEFAULT_EMBEDDING_MODEL
-                    )
-                    # Access the embedding values directly - this is the key change
-                    dense_embedding = embedding_result.embeddings[0]
-                    st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-                except Exception as e:
-                    logger.error(f"Error generating dense embedding: {str(e)}")
-                    st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
-                    continue
+                # Generate context for chunk
+                chunk_context = await generate_chunk_context(chunk['text'], metadata['doc_context'])
                 
                 # Upsert to Qdrant with both dense and sparse vectors
                 try:
-                    success = st.session_state.clients['qdrant'].upsert_chunk(
+                    success = st.session_state.clients['qdrant'].upsert(
                         chunk_text=chunk['text'],
                         context_text=chunk_context,
                         dense_embedding=dense_embedding,
@@ -595,7 +573,6 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
             except Exception as e:
                 logger.error(f"Error processing chunk {i}: {str(e)}")
-                st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
                 continue
         
         return processed_chunks
@@ -772,13 +749,10 @@ with tab2:
     
     if query:
         try:
-            # Generate query embedding - modify the client initialization
-            query_embedding = st.session_state.clients['embed_model'].embed(
-                [query], 
-                model=DEFAULT_EMBEDDING_MODEL
-            ).embeddings[0]  # Access the first embedding directly
+            # Generate query embedding using correct method
+            query_embedding = st.session_state.clients['embed_model'].get_query_embedding(query)
             
-            # Search using the embedding (already in correct format)
+            # Search using the embedding
             results = st.session_state.clients['qdrant'].search(
                 query_text=query,
                 query_vector=query_embedding,
