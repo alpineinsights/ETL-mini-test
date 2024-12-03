@@ -1,6 +1,7 @@
 import streamlit as st
 from qdrant_client import QdrantClient, models
 from typing import Optional
+
 # Optimized gRPC configuration
 GRPC_OPTIONS = {
     # Connection Management
@@ -19,6 +20,7 @@ GRPC_OPTIONS = {
     'grpc.max_connection_age_ms': 600000,
     'grpc.max_connection_age_grace_ms': 5000
 }
+
 def get_qdrant_client(url: str, api_key: str, timeout: int = 60) -> Optional[QdrantClient]:
     """Create a Qdrant client with optimized settings."""
     try:
@@ -33,26 +35,16 @@ def get_qdrant_client(url: str, api_key: str, timeout: int = 60) -> Optional[Qdr
     except Exception as e:
         st.error(f"Failed to create Qdrant client: {str(e)}")
         return None
-from qdrant_client import QdrantClient
 
-def initialize_qdrant():
-    """Initialize Qdrant client with optimized settings."""
+def initialize_qdrant() -> Optional[QdrantClient]:
     """Initialize Qdrant client with proper timeout settings."""
     try:
         client = get_qdrant_client(
-        client = QdrantClient(
             url=st.secrets["QDRANT_URL"],
-            api_key=st.secrets["QDRANT_API_KEY"]
             api_key=st.secrets["QDRANT_API_KEY"],
-            timeout=60,  # Add timeout for cloud deployments
-            prefer_grpc=False  # Force HTTP protocol
+            timeout=60
         )
-
-        if client is None:
-            return None
-            
-        # Test connection
-        # Test connection by getting collections list instead of collection info
-        collections = client.get_collections()
-        if collections is None:
-            st.error("Failed to get collections from Qdrant")
+        return client
+    except Exception as e:
+        st.error(f"Failed to initialize Qdrant client: {str(e)}")
+        return None
