@@ -148,8 +148,7 @@ def initialize_clients() -> bool:
         st.write("Initializing Anthropic client...")
         try:
             anthropic_client = anthropic.Client(
-                api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
-                base_url="https://api.anthropic.com/v1"  # Ensure correct base URL
+                api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
             )
             
             if not validate_anthropic_client(anthropic_client):
