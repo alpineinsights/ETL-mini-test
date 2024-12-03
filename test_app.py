@@ -189,9 +189,13 @@ def initialize_clients() -> bool:
             
             st.write("Initializing Anthropic client...")
             try:
-                # Create a new clean instance with the latest API version
+                # Create Anthropic client with beta features enabled
                 anthropic_client = anthropic.Anthropic(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
+                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
+                    # Enable beta features
+                    headers={
+                        "anthropic-beta": "prompt-caching-2024-07-31"
+                    }
                 )
                 st.write("Anthropic client created successfully")
                 
