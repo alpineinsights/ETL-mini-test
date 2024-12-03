@@ -185,33 +185,23 @@ def initialize_clients() -> bool:
             # Debug logging
             st.write("Starting client initialization...")
             
-            # First, initialize Anthropic client
+            # First, initialize Anthropic client correctly
             st.write("Initializing Anthropic client...")
             try:
-                anthropic_client = anthropic.Anthropic(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip(),
-                    headers={
-                        "anthropic-beta": "prompt-caching-2024-07-31"
-                    }
+                # Use Client instead of Anthropic
+                anthropic_client = anthropic.Client(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
                 )
                 st.session_state.clients['anthropic'] = anthropic_client
                 st.write("Anthropic client created successfully")
                 
                 # Verify client is set
-                if 'anthropic' in st.session_state.clients:
-                    st.write("Anthropic client is stored in session state")
-                else:
+                if 'anthropic' not in st.session_state.clients:
                     raise ValueError("Failed to store Anthropic client in session state")
                 
             except Exception as e:
                 st.error(f"Anthropic error details: {type(e).__name__}: {str(e)}")
                 raise
-            
-            # Then initialize Qdrant client
-            st.write("Initializing Qdrant client...")
-            qdrant_client = initialize_qdrant()
-            if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
             
             # Initialize VoyageEmbedding
             st.write("Initializing VoyageEmbedding...")
@@ -226,15 +216,24 @@ def initialize_clients() -> bool:
                 st.error(f"VoyageEmbedding error: {str(e)}")
                 raise
             
+            # Then initialize Qdrant client
+            st.write("Initializing Qdrant client...")
+            qdrant_client = initialize_qdrant()
+            if not qdrant_client:
+                raise ValueError("Failed to initialize Qdrant client")
+            
             # Finally, initialize QdrantAdapter with the Anthropic client
             st.write("Initializing QdrantAdapter...")
             try:
+                if 'anthropic' not in st.session_state.clients:
+                    raise ValueError("Anthropic client must be initialized first")
+                
                 qdrant_adapter = QdrantAdapter(
                     url=st.secrets["QDRANT_URL"].strip(),
                     api_key=st.secrets["QDRANT_API_KEY"].strip(),
                     collection_name=st.session_state.collection_name,
                     embedding_model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=st.session_state.clients['anthropic']  # Pass the stored client
+                    anthropic_client=st.session_state.clients['anthropic']
                 )
                 st.session_state.clients['qdrant'] = qdrant_adapter
                 st.write("QdrantAdapter created successfully")
@@ -242,11 +241,18 @@ def initialize_clients() -> bool:
                 st.error(f"QdrantAdapter error: {str(e)}")
                 raise
             
-        return True
+        return validate_clients()
         
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
         return False
+
+def validate_clients():
+    """Validate that all required clients are initialized"""
+    if 'clients' not in st.session_state:
+        return False
+    required_clients = ['anthropic', 'embed_model', 'qdrant']
+    return all(client in st.session_state.clients for client in required_clients)
 
 # Processing Functions
 def count_tokens(text: str) -> int:
