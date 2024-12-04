@@ -65,6 +65,10 @@ def rate_limited_context(func, *args, **kwargs):
     """Rate-limited wrapper for Anthropic context generation."""
     return func(*args, **kwargs)
 
+def is_overloaded_error(exception):
+    """Check if the exception is an overloaded error."""
+    return isinstance(exception, Exception) and 'overloaded_error' in str(exception)
+
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
@@ -350,6 +354,11 @@ class QdrantAdapter:
             logger.error(f"Error updating embedding model: {str(e)}")
             raise
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        stop=stop_after_attempt(5),
+        retry=retry_if_exception(is_overloaded_error)
+    )
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata from document text using Anthropic's Claude model."""
         try:
