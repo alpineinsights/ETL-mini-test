@@ -164,7 +164,8 @@ def initialize_clients():
         # Initialize VoyageAI embedding model
         embed_model = VoyageEmbedding(
             api_key=st.secrets["VOYAGE_API_KEY"],
-            model_name=DEFAULT_EMBEDDING_MODEL
+            model_name=DEFAULT_EMBEDDING_MODEL,
+            embed_batch_size=10  # Optional: adjust based on your needs
         )
 
         # Initialize QdrantAdapter with the clients
@@ -408,7 +409,10 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                     context = await generate_chunk_context(chunk['text'], doc_context)
                     
                     # Generate embedding using Voyage
-                    embedding = await st.session_state.clients['embed_model'].aget_query_embedding(chunk['text'])
+                    embedding = await st.session_state.clients['embed_model'].aembed(
+                        chunk['text'],
+                        model_name=DEFAULT_EMBEDDING_MODEL
+                    )
                     
                     # Access embedding values correctly
                     dense_vector = embedding[0]  # Get first embedding array
@@ -911,13 +915,13 @@ st.markdown("Powered by Alpine")
 async def perform_search(query: str, embed_model, qdrant_client):
     """Perform async search operation."""
     try:
-        # Get embedding asynchronously
-        query_embedding = await embed_model.aget_query_embedding(
+        # Get embedding asynchronously using the correct method
+        query_embedding = await embed_model.aembed(
             query,
             model_name=DEFAULT_EMBEDDING_MODEL
         )
         
-        # Search using the embedding (this is synchronous, but that's okay)
+        # Search using the embedding
         results = qdrant_client.search(
             query_text=query,
             query_vector=query_embedding,
