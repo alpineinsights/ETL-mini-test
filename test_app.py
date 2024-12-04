@@ -159,15 +159,16 @@ def initialize_clients() -> bool:
         if 'clients' not in st.session_state:
             logger.info("Starting client initialization...")
             
-            # 1. Initialize base Qdrant client with proper configuration
+            # 1. Initialize base Qdrant client using init_utils
             logger.info("Initializing Qdrant client...")
-            qdrant_client = QdrantClient(
+            qdrant_client = get_qdrant_client(
                 url=st.secrets["QDRANT_URL"],
                 api_key=st.secrets["QDRANT_API_KEY"],
-                prefer_grpc=True,
-                timeout=60,
-                grpc_options=GRPC_OPTIONS
+                timeout=60
             )
+            
+            if not qdrant_client:
+                raise ValueError("Failed to initialize Qdrant client")
             
             # Test the connection
             try:
@@ -177,21 +178,17 @@ def initialize_clients() -> bool:
                 logger.error(f"Failed to connect to Qdrant: {str(e)}")
                 raise ValueError("Qdrant connection test failed")
             
-            # 2. Initialize Voyage embedding model
-            logger.info("Initializing Voyage embedding model...")
+            # 2. Initialize other clients
             embed_model = VoyageEmbedding(
                 model_name=DEFAULT_EMBEDDING_MODEL,
                 voyage_api_key=st.secrets["VOYAGE_API_KEY"]
             )
             
-            # 3. Initialize Anthropic client
-            logger.info("Initializing Anthropic client...")
             anthropic_client = anthropic.Anthropic(
                 api_key=st.secrets["ANTHROPIC_API_KEY"]
             )
             
-            # 4. Initialize QdrantAdapter with all required components
-            logger.info("Initializing QdrantAdapter...")
+            # 3. Initialize QdrantAdapter
             try:
                 qdrant_adapter = QdrantAdapter(
                     client=qdrant_client,
