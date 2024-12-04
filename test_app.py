@@ -343,37 +343,57 @@ def save_processed_urls(urls: set) -> None:
     except Exception as e:
         logger.error(f"Error saving processed URLs: {str(e)}")
 
+def initialize_metrics():
+    """Initialize or reset processing metrics with all required keys."""
+    return {
+        'start_time': None,
+        'total_docs': 0,
+        'processed_docs': 0,
+        'total_chunks': 0,
+        'processed_chunks': 0,
+        'total_tokens': 0,
+        'errors': 0,
+        'stages': {
+            'context': {'success': 0, 'failed': 0},
+            'dense_vectors': {'success': 0, 'failed': 0},
+            'sparse_vectors': {'success': 0, 'failed': 0},
+            'upserts': {'success': 0, 'failed': 0}
+        }
+    }
+
 def display_metrics():
     """Display detailed processing metrics."""
     if 'processing_metrics' not in st.session_state:
+        st.session_state.processing_metrics = initialize_metrics()
         st.warning("No processing metrics available")
         return
 
     metrics = st.session_state.processing_metrics
     
     # Document Processing Progress
-    st.write(f"Processed {metrics['processed_docs']} of {metrics['total_docs']} documents")
+    st.write(f"Processed {metrics.get('processed_docs', 0)} of {metrics.get('total_docs', 0)} documents")
     
     # Detailed Metrics
     col1, col2 = st.columns(2)
     
     with col1:
-        st.metric("Documents Processed", metrics['processed_docs'])
-        st.metric("Total Chunks", metrics['total_chunks'])
+        st.metric("Documents Processed", metrics.get('processed_docs', 0))
+        st.metric("Total Chunks", metrics.get('total_chunks', 0))
         st.metric("Errors", metrics.get('errors', 0))
         
     with col2:
         st.metric("Total Tokens", metrics.get('total_tokens', 0))
-        st.metric("Chunks Created", metrics['processed_chunks'])
+        st.metric("Chunks Created", metrics.get('processed_chunks', 0))
         
     # Stage-wise Success/Failure Metrics
-    st.subheader("Processing Stages")
-    stages_df = pd.DataFrame({
-        'Stage': list(metrics['stages'].keys()),
-        'Success': [s['success'] for s in metrics['stages'].values()],
-        'Failed': [s['failed'] for s in metrics['stages'].values()]
-    })
-    st.dataframe(stages_df)
+    if 'stages' in metrics:
+        st.subheader("Processing Stages")
+        stages_df = pd.DataFrame({
+            'Stage': list(metrics['stages'].keys()),
+            'Success': [s.get('success', 0) for s in metrics['stages'].values()],
+            'Failed': [s.get('failed', 0) for s in metrics['stages'].values()]
+        })
+        st.dataframe(stages_df)
     
     # Processing Time
     if metrics.get('start_time'):
@@ -382,7 +402,7 @@ def display_metrics():
 
     # Add any warnings or errors
     if metrics.get('errors', 0) > 0:
-        st.warning(f"Encountered {metrics['errors']} errors during processing")
+        st.warning(f"Encountered {metrics.get('errors', 0)} errors during processing")
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
     """Process chunks asynchronously with proper embedding and context generation."""
@@ -725,7 +745,7 @@ with st.sidebar:
     st.header("Controls")
     
     if st.button("Reset Metrics"):
-        st.session_state.processing_metrics = metrics_template.copy()
+        st.session_state.processing_metrics = initialize_metrics()
         st.success("Metrics reset successfully")
     
     if st.button("Delete Collection"):
@@ -825,6 +845,7 @@ with tab1:
     )
     
     if st.button("Process Sitemap"):
+        st.session_state.processing_metrics = initialize_metrics()
         try:
             with st.spinner("Parsing sitemap..."):
                 urls = parse_sitemap(sitemap_url)
