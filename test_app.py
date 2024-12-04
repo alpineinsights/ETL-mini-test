@@ -7,7 +7,8 @@ import streamlit as st
 import anthropic
 import voyageai
 from llama_parse import LlamaParse
-from llama_index.embeddings.voyageai import VoyageEmbedding 
+from llama_index_embeddings_voyageai import VoyageEmbedding
+from llama_index.core.embeddings import BaseEmbedding
 import tempfile
 import shutil
 from datetime import datetime
@@ -423,10 +424,7 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                     context = await generate_chunk_context(chunk['text'], doc_context)
                     
                     # Generate embedding using Voyage
-                    embedding = st.session_state.clients['embed_model'].embed(
-                        texts=[chunk['text']],
-                        model=DEFAULT_EMBEDDING_MODEL
-                    )
+                    embedding = await st.session_state.clients['embed_model'].aget_query_embedding(chunk['text'])
                     
                     # Access embedding values correctly
                     dense_vector = embedding[0]  # Get first embedding array
@@ -888,7 +886,7 @@ with tab2:
     if query:
         try:
             # Generate query embedding using correct method
-            query_embedding = st.session_state.clients['embed_model'].get_query_embedding(query)
+            query_embedding = await st.session_state.clients['embed_model'].aget_query_embedding(query)
             
             # Search using the embedding
             results = st.session_state.clients['qdrant'].search(
