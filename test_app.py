@@ -262,31 +262,28 @@ async def generate_document_context(text: str) -> Any:
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
 )
-async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
+async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
     """Generate context for a chunk using the cached document context."""
     try:
-        response = await st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
-            model=DEFAULT_LLM_MODEL,
-            max_tokens=300,
-            system=[{
-                "type": "text",
-                "text": DEFAULT_CONTEXT_PROMPT,
-                "cache_control": {"type": "ephemeral"}
-            }],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
-                    }
-                ]
-            }]
+        # Combine the prompts
+        system_prompt = f"{anthropic.AI_PROMPT} {st.session_state.context_prompt}"
+        user_prompt = f"\n\n{anthropic.HUMAN_PROMPT} Document context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
+        full_prompt = f"{system_prompt}{user_prompt}{anthropic.AI_PROMPT}"
+
+        # Call the completions.create method with the cache parameter
+        response = await st.session_state.clients['anthropic'].acompletions.create(
+            model=st.session_state.llm_model,
+            max_tokens_to_sample=300,
+            prompt=full_prompt,
+            cache="ephemeral"
         )
-        
+
+        # Extract the assistant's reply
+        result = response['completion'].strip()
+
         st.session_state.processing_metrics['stages']['context']['success'] += 1
-        return response.content[0].text
-        
+        return result
+
     except Exception as e:
         logger.error(f"Error generating chunk context: {str(e)}")
         st.session_state.processing_metrics['stages']['context']['failed'] += 1
