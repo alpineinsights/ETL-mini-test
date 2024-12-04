@@ -382,18 +382,19 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with caching and progress tracking."""
+    """Process chunks asynchronously with caching and proper error handling."""
     try:
         processed_chunks = []
         total_chunks = len(chunks)
         
-        # Update progress display
-        status_text.text(f"Processing {total_chunks} chunks...")
+        # Create progress indicators
         chunk_progress = st.progress(0)
+        status_text = st.empty()
+        status_text.text(f"Processing {total_chunks} chunks...")
         
-        # Generate document-level context once
+        # Generate document-level context
         try:
-            doc_context = await rate_limited_context(
+            doc_context_response = await rate_limited_context(
                 st.session_state.clients['anthropic'].messages.create,
                 model=DEFAULT_LLM_MODEL,
                 max_tokens=300,
@@ -409,20 +410,27 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         
         for i, chunk in enumerate(chunks):
             try:
-                # Generate chunk context
-                chunk_context = await generate_chunk_context(chunk['text'], doc_context)
-                logger.info(f"Generated context for chunk {i+1}/{total_chunks}")
+                # Generate context with rate limiting
+                chunk_context = await rate_limited_context(
+                    generate_chunk_context,
+                    chunk['text'],
+                    doc_context_response
+                )
+                st.session_state.processing_metrics['stages']['context']['success'] += 1
                 
-                # Generate embedding
+                # Generate embedding with rate limiting
                 try:
+                    # Direct embedding call to Voyage API
                     embedding_result = await rate_limited_embedding(
-                        st.session_state.clients['embed_model'].embed,
+                        st.session_state.clients['embed_model'].embed_async,  # Use async version
                         texts=[chunk['text']],
                         model=DEFAULT_EMBEDDING_MODEL
                     )
-                    dense_embedding = embedding_result[0]  # Access first embedding
+                    
+                    # Extract embedding from result
+                    dense_embedding = embedding_result[0]  # First element of returned list
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-                    logger.info(f"Generated embedding for chunk {i+1}/{total_chunks}")
+                    
                 except Exception as e:
                     logger.error(f"Error generating embedding: {str(e)}")
                     st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
@@ -430,7 +438,7 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Upsert to Qdrant
                 try:
-                    success = st.session_state.clients['qdrant'].upsert_chunk(
+                    success = await st.session_state.clients['qdrant'].upsert_chunk(
                         chunk_text=chunk['text'],
                         context_text=chunk_context,
                         dense_embedding=dense_embedding,
@@ -452,9 +460,11 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 
                 # Update progress
                 chunk_progress.progress((i + 1) / total_chunks)
+                status_text.text(f"Processed chunk {i + 1}/{total_chunks}")
                 
             except Exception as e:
                 logger.error(f"Error processing chunk {i}: {str(e)}")
+                st.session_state.processing_metrics['errors'] += 1
                 continue
         
         return processed_chunks
