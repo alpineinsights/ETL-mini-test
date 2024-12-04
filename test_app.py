@@ -153,55 +153,39 @@ def validate_environment():
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-def initialize_clients() -> bool:
-    """Initialize all required clients in the correct order."""
+def initialize_clients():
+    """Initialize all necessary clients."""
     try:
-        # First validate environment
-        if not st.secrets.get("ANTHROPIC_API_KEY"):
-            raise ValueError("ANTHROPIC_API_KEY not found in secrets")
-        
-        # Initialize Anthropic client first
-        st.write("Initializing Anthropic client...")
-        try:
-            anthropic_client = anthropic.Client(
-                api_key=st.secrets["ANTHROPIC_API_KEY"].strip()
-            )
-            
-            if not validate_anthropic_client(anthropic_client):
-                raise ValueError("Failed to validate Anthropic client")
-            
-            st.session_state.clients['anthropic'] = anthropic_client
-            st.write("Anthropic client created and validated successfully")
-            
-        except Exception as e:
-            st.error(f"Anthropic client initialization failed: {str(e)}")
-            raise
-        
-        # Then initialize Voyage
-        st.write("Initializing VoyageEmbedding...")
-        voyage_embed = VoyageEmbedding(
-            model_name=DEFAULT_EMBEDDING_MODEL,
-            voyage_api_key=st.secrets["VOYAGE_API_KEY"].strip()
-        )
-        st.session_state.clients['embed_model'] = voyage_embed
-        st.write("VoyageEmbedding created successfully")
+        # Initialize Qdrant client first
+        qdrant_client = initialize_qdrant()
+        if not qdrant_client:
+            raise ValueError("Failed to initialize Qdrant client")
 
-        # Initialize QdrantAdapter last with the anthropic client
-        st.write("Initializing QdrantAdapter...")
+        # Initialize VoyageAI embedding model
+        embed_model = VoyageEmbedding(
+            api_key=st.secrets["VOYAGE_API_KEY"],
+            model_name=DEFAULT_EMBEDDING_MODEL
+        )
+
+        # Initialize QdrantAdapter with the clients
         qdrant_adapter = QdrantAdapter(
-            url=st.secrets["QDRANT_URL"].strip(),
-            api_key=st.secrets["QDRANT_API_KEY"].strip(),
-            collection_name=st.session_state.collection_name,
-            embedding_model=DEFAULT_EMBEDDING_MODEL,
-            anthropic_client=st.session_state.clients['anthropic']
+            client=qdrant_client,  # Pass the client instead of url
+            embed_model=embed_model,
+            collection_name="documents",  # Make sure this matches your collection name
+            model=DEFAULT_EMBEDDING_MODEL
         )
-        st.session_state.clients['qdrant'] = qdrant_adapter
-        st.write("QdrantAdapter created successfully")
 
-        return validate_clients()
-        
+        # Store clients in session state
+        st.session_state.clients = {
+            'qdrant': qdrant_adapter,
+            'embed_model': embed_model,
+        }
+
+        return True
+
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
+        logger.error(f"Client initialization error: {str(e)}")
         return False
 
 def validate_clients():
