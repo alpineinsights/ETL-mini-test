@@ -291,49 +291,45 @@ async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
         raise
 
 async def process_urls_async(urls: List[str]):
+    """Process URLs asynchronously with better error handling and progress tracking."""
     try:
-        # Initialize metrics at start
-        st.session_state.processing_metrics = {
-            'start_time': datetime.now(),
-            'total_docs': len(urls),
-            'processed_docs': 0,
-            'total_chunks': 0,
-            'processed_chunks': 0,
-            'documents_processed': 0,
-            'chunks_created': 0,
-            'embedding_time': 0,
-            'total_tokens': 0
-        }
-        
-        # Create progress indicators
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Process each URL with proper metrics updates
-        for idx, url in enumerate(urls):
+        for i, url in enumerate(urls, 1):
             try:
-                result = await process_url(url)
-                if result:
-                    st.session_state.processing_metrics['processed_docs'] += 1
-                    st.session_state.processing_metrics['chunks_created'] += len(result['chunks'])
-                    st.session_state.processing_metrics['total_tokens'] += sum(len(chunk['text'].split()) for chunk in result['chunks'])
-                    st.session_state.processing_metrics['embedding_time'] += result.get('embedding_time', 0)
-                    
+                logger.info(f"Processing document {i}/{len(urls)}: {url}")
+                
                 # Update progress
-                progress = (idx + 1) / len(urls)
-                progress_bar.progress(progress)
-                status_text.text(f"Processed {idx + 1}/{len(urls)} documents")
+                progress = i / len(urls)
+                st.session_state.progress_bar.progress(progress)
+                st.session_state.status_text.text(f"Processing document {i}/{len(urls)}")
+                
+                # Parse document
+                doc_text = await parse_document(url)
+                if not doc_text:
+                    logger.error(f"Failed to parse document: {url}")
+                    st.session_state.processing_metrics['errors'] += 1
+                    continue
+                
+                # Process document
+                success = st.session_state.clients['qdrant'].process_document(
+                    doc_text=doc_text,
+                    url=url
+                )
+                
+                if success:
+                    st.session_state.processing_metrics['processed_docs'] += 1
+                    logger.info(f"Successfully processed document {i}/{len(urls)}")
+                else:
+                    st.session_state.processing_metrics['errors'] += 1
+                    logger.error(f"Failed to process document {i}/{len(urls)}")
                 
             except Exception as e:
-                st.error(f"Error processing URL {url}: {str(e)}")
+                logger.error(f"Error processing {url}: {str(e)}")
+                st.session_state.processing_metrics['errors'] += 1
                 continue
-        
-        # Final update to indicate completion
-        progress_bar.progress(1.0)
-        status_text.text("Processing complete!")
                 
     except Exception as e:
-        st.error(f"Batch processing error: {str(e)}")
+        logger.error(f"Error in process_urls_async: {str(e)}")
+        raise
 
 def save_processed_urls(urls: set) -> None:
     """Save processed URLs to persistent storage"""
