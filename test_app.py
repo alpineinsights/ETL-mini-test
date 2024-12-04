@@ -342,7 +342,7 @@ def save_processed_urls(urls: set) -> None:
 def initialize_metrics() -> Dict[str, Any]:
     """Initialize processing metrics with default values."""
     return {
-        'start_time': datetime.now().isoformat(),
+        'start_time': datetime.now(),
         'total_docs': 0,
         'processed_docs': 0,
         'total_chunks': 0,
@@ -353,55 +353,36 @@ def initialize_metrics() -> Dict[str, Any]:
             'dense_vectors': {'success': 0, 'failed': 0},
             'sparse_vectors': {'success': 0, 'failed': 0},
             'upserts': {'success': 0, 'failed': 0}
-        },
-        'documents_processed': 0,
-        'chunks_created': 0,
-        'embedding_time': 0,
-        'total_tokens': 0
+        }
     }
 
 def display_metrics():
-    """Display detailed processing metrics."""
-    if 'processing_metrics' not in st.session_state:
-        st.session_state.processing_metrics = initialize_metrics()
-        st.warning("No processing metrics available")
-        return
-
+    """Display current processing metrics."""
     metrics = st.session_state.processing_metrics
     
-    # Document Processing Progress
-    st.write(f"Processed {metrics.get('processed_docs', 0)} of {metrics.get('total_docs', 0)} documents")
-    
-    # Detailed Metrics
-    col1, col2 = st.columns(2)
+    # Create columns for metrics
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Documents Processed", metrics.get('processed_docs', 0))
-        st.metric("Total Chunks", metrics.get('total_chunks', 0))
-        st.metric("Errors", metrics.get('errors', 0))
+        st.metric("Total Documents", metrics['total_docs'])
+        st.metric("Processed Documents", metrics['processed_docs'])
         
     with col2:
-        st.metric("Total Tokens", metrics.get('total_tokens', 0))
-        st.metric("Chunks Created", metrics.get('processed_chunks', 0))
+        st.metric("Total Chunks", metrics['total_chunks'])
+        st.metric("Processed Chunks", metrics['processed_chunks'])
         
-    # Stage-wise Success/Failure Metrics
-    if 'stages' in metrics:
-        st.subheader("Processing Stages")
-        stages_df = pd.DataFrame({
-            'Stage': list(metrics['stages'].keys()),
-            'Success': [s.get('success', 0) for s in metrics['stages'].values()],
-            'Failed': [s.get('failed', 0) for s in metrics['stages'].values()]
-        })
-        st.dataframe(stages_df)
-    
+    with col3:
+        st.metric("Errors", metrics['errors'])
+        
     # Processing Time
     if metrics.get('start_time'):
-        elapsed = datetime.now() - metrics['start_time']
+        if isinstance(metrics['start_time'], str):
+            # Convert string to datetime if needed
+            start_time = datetime.fromisoformat(metrics['start_time'])
+        else:
+            start_time = metrics['start_time']
+        elapsed = datetime.now() - start_time
         st.metric("Processing Time", f"{elapsed.total_seconds():.2f}s")
-
-    # Add any warnings or errors
-    if metrics.get('errors', 0) > 0:
-        st.warning(f"Encountered {metrics.get('errors', 0)} errors during processing")
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
     """Process chunks asynchronously with proper embedding and context generation."""
@@ -529,42 +510,37 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
         logger.info(f"Starting to parse document: {url}")
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            result_type="text"  # "markdown" or "text"
+            result_type="text"
         )
         
-        # Start time for timeout tracking
-        start_time = time.time()
+        # Download the file
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
         
-        # Upload document
-        job_id = await parser.aupload(url)
-        logger.info(f"Document uploaded, job_id: {job_id}")
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
         
-        # Poll for results with timeout
-        while time.time() - start_time < timeout:
-            status = await parser.aget_status(job_id)
-            
-            if status.status == "completed":
-                result = await parser.aget_result(job_id)
-                logger.info(f"Successfully parsed document: {url}")
-                return result
-            
-            elif status.status == "failed":
-                logger.error(f"Parsing failed for document: {url}")
-                return None
-            
-            # Add more detailed logging
-            logger.info(f"Current status: {status.status}, elapsed time: {int(time.time() - start_time)}s")
-            
-            # Wait before next poll
-            await asyncio.sleep(2)
+        # Use the correct method for the LlamaParse version
+        try:
+            # Try newer version method first
+            result = await parser.aload(temp_path)
+        except AttributeError:
+            # Fallback to older version method
+            result = parser.load(temp_path)
         
-        # If we get here, we've timed out
-        logger.error(f"Parsing timed out after {timeout} seconds for document: {url}")
-        return None
+        return result
         
     except Exception as e:
         logger.error(f"Error parsing document {url}: {str(e)}")
-        return None
+        raise
+    finally:
+        # Cleanup temp file
+        if 'temp_path' in locals():
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.error(f"Error cleaning temp file: {str(e)}")
 
 # Add this near the top of the file, after the imports and before the UI code
 def parse_sitemap(url: str) -> List[str]:
