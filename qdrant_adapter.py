@@ -19,7 +19,9 @@ from llama_index.core.node_parser import SentenceSplitter
 from urllib.parse import unquote
 import json
 from anthropic import Client
-from llama_index.embeddings.base import EmbeddingModel
+from llama_index.core.embeddings import BaseEmbedding
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import TextNode
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -93,17 +95,20 @@ class QdrantAdapter:
 
     def __init__(self, model: str, qdrant_client: QdrantClient, 
                  llm_client: Client = None,
-                 embed_model: EmbeddingModel = None):
+                 embed_model: BaseEmbedding = None):
         """Initialize QdrantAdapter with required clients and models."""
         self.model = model
         self.client = qdrant_client
         self.llm_client = llm_client
         self.embed_model = embed_model
+        self.dense_dim = VECTOR_DIMENSIONS.get(model, 1024)  # Default to 1024 if model not found
+        self.collection_name = "documents"  # Add this if not defined elsewhere
         
         # Initialize TF-IDF vectorizer
         self.vectorizer = TfidfVectorizer(
             lowercase=True,
-            strip_accents='unicode'
+            strip_accents='unicode',
+            max_features=VECTOR_DIMENSIONS['sparse']  # Use sparse dimension from constants
         )
         
         logger.info(f"Initializing QdrantAdapter with model: {model}")
@@ -545,3 +550,20 @@ class QdrantAdapter:
                 'file_name': url.split('/')[-1],
                 'creation_date': datetime.now().isoformat()
             }
+
+    def get_embedding(self, text: str) -> List[float]:
+        """Get dense embedding for text using VoyageAI."""
+        try:
+            if not self.embed_model:
+                raise ValueError("Embedding model not initialized")
+            
+            # Use the new embedding interface
+            embedding = self.embed_model.get_text_embedding(
+                text,
+                model_name=self.model
+            )
+            
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating embedding: {str(e)}")
+            raise
