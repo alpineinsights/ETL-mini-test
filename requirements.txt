@@ -1,18 +1,32 @@
+# Core dependencies
 streamlit==1.32.2
 anthropic==0.40.0
 voyageai==0.2.4
 llama-parse==0.5.12
 qdrant-client>=1.12.1
+
+# LlamaIndex and related packages
 llama-index-core==0.12.2
 llama-index-embeddings-voyageai==0.12.2
 llama-index-vector-stores-qdrant==0.12.2
+
+# Machine learning and data processing
 scikit-learn>=1.4.0
 numpy>=1.24.0
+pandas>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
 tenacity>=8.2.0
 tqdm>=4.66.0
-python-dotenv>=1.0.0
 ratelimit>=2.2.1
+requests>=2.31.0
+
+# Monitoring and logging
 sentry-sdk>=1.40.0
 prometheus-client>=0.20.0
+
+# Server and async
 gunicorn>=21.2.0
 nest-asyncio>=1.5.8
+aiohttp>=3.9.0
