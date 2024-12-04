@@ -95,26 +95,26 @@ class QdrantAdapter:
 
     def __init__(
         self,
-        url: str,
-        api_key: str,
+        client: QdrantClient,
+        embed_model: BaseEmbedding,
         collection_name: str = "documents",
-        embedding_model: str = "voyage-finance-2",
+        model: str = "voyage-finance-2",
         anthropic_client = None
     ):
         """Initialize QdrantAdapter with necessary clients and configuration."""
         try:
-            # Initialize Qdrant client directly
-            self.client = QdrantClient(
-                url=url,
-                api_key=api_key,
-                timeout=60,
-                prefer_grpc=False  # Force HTTP protocol
-            )
+            self.client = client
+            self.embed_model = embed_model
             self.collection_name = collection_name
-            self.embedding_model = embedding_model
-            self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
-            self.sparse_dim = 100  # Reduced dimension for TF-IDF
+            self.model = model
             self.anthropic_client = anthropic_client
+            
+            # Set dimensions based on the model
+            if model not in VECTOR_DIMENSIONS:
+                raise ValueError(f"Unsupported model: {model}. Must be one of {list(VECTOR_DIMENSIONS.keys())}")
+            
+            self.dense_dim = VECTOR_DIMENSIONS[model]
+            self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
             
             # Initialize TF-IDF vectorizer
             self.vectorizer = TfidfVectorizer(
@@ -128,22 +128,46 @@ class QdrantAdapter:
                 "business market growth strategy development product service customer sales"
             ]
             self.vectorizer.fit(default_text)
-            logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
             
-            # Check and initialize collection
-            try:
-                info = self.client.get_collection(self.collection_name)
-                logger.info(f"Found existing collection: {self.collection_name}")
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    logger.info(f"Collection {self.collection_name} not found, creating...")
-                    self.create_collection()
-                else:
-                    raise
+            # Verify the client connection
+            self.client.get_collections()
+            logger.info("Successfully connected to Qdrant")
             
-            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
+            # Ensure collection exists
+            self._ensure_collection_exists()
+            
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            raise
+
+    def _ensure_collection_exists(self):
+        """Ensure the collection exists and has the correct configuration."""
+        try:
+            # Check if collection exists
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if self.collection_name not in collection_names:
+                logger.info(f"Creating collection {self.collection_name}")
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config={
+                        "dense": models.VectorParams(
+                            size=self.dense_dim,
+                            distance=models.Distance.COSINE
+                        ),
+                        "sparse": models.VectorParams(
+                            size=self.sparse_dim,
+                            distance=models.Distance.COSINE
+                        )
+                    }
+                )
+                logger.info(f"Collection {self.collection_name} created successfully")
+            else:
+                logger.info(f"Collection {self.collection_name} already exists")
+                
+        except Exception as e:
+            logger.error(f"Error ensuring collection exists: {str(e)}")
             raise
 
     async def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
@@ -191,58 +215,6 @@ class QdrantAdapter:
             
         except Exception as e:
             logger.error(f"Error processing document {url}: {str(e)}")
-            raise
-
-    def _ensure_collection_exists(self):
-        """Ensure that the collection exists, and create it if it doesn't."""
-        try:
-            info = self.client.get_collection(self.collection_name)
-            if info.status != "green":
-                logger.warning(f"Collection {self.collection_name} exists but status is {info.status}")
-                if not self.recover_collection():
-                    logger.warning("Recovery failed, recreating collection")
-                    self.create_collection()
-            else:
-                logger.info(f"Found existing collection: {self.collection_name}")
-        except Exception as e:
-            if "not found" in str(e).lower():
-                logger.info(f"Collection {self.collection_name} not found, creating...")
-                self.create_collection()
-            else:
-                logger.error(f"Error ensuring collection exists: {str(e)}")
-                raise
-
-    def create_collection(self, collection_name: Optional[str] = None) -> bool:
-        """Create a new collection with the specified configuration."""
-        try:
-            collection_name = collection_name or self.collection_name
-
-            vectors_config = {
-                "dense": models.VectorParams(
-                    size=self.dense_dim,
-                    distance=models.Distance.COSINE
-                ),
-                "sparse": models.VectorParams(
-                    size=self.sparse_dim,
-                    distance=models.Distance.COSINE
-                )
-            }
-
-            self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=vectors_config,
-                optimizers_config=models.OptimizersConfigDiff(
-                    indexing_threshold=0,  # Immediate indexing
-                    memmap_threshold=20000,  # Better memory management
-                    max_optimization_threads=4
-                )
-            )
-
-            logger.info(f"Created new collection {collection_name}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error creating collection: {str(e)}")
             raise
 
     @retry(
@@ -423,7 +395,7 @@ class QdrantAdapter:
                 raise ValueError(f"Unknown embedding model: {new_model}")
 
             if new_dim != self.dense_dim:
-                self.embedding_model = new_model
+                self.model = new_model
                 self.dense_dim = new_dim
                 self.create_collection()
                 logger.info(f"Updated embedding model to {new_model} and recreated collection")
