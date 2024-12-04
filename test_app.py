@@ -170,14 +170,12 @@ def initialize_clients() -> bool:
                 voyage_api_key=st.secrets["VOYAGE_API_KEY"]
             )
             
-            # Initialize Qdrant client
+            # Initialize Qdrant client using the proper function
             logger.info("Initializing Qdrant client...")
-            qdrant_client = get_qdrant_client(
-                url=st.secrets["QDRANT_URL"],
-                api_key=st.secrets["QDRANT_API_KEY"]
-            )
+            qdrant_client = initialize_qdrant()  # Changed from get_qdrant_client to initialize_qdrant
             if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
+                logger.error("Failed to initialize Qdrant client")
+                return False
             
             # Initialize QdrantAdapter
             logger.info("Initializing QdrantAdapter...")
