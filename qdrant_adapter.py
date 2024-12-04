@@ -93,40 +93,26 @@ class QdrantAdapter:
     {doc_content}
     """
 
-    def __init__(self, model: str, qdrant_client: QdrantClient, 
-                 llm_client: Client = None,
-                 embed_model: BaseEmbedding = None):
-        """Initialize QdrantAdapter with required clients and models."""
-        self.model = model
-        self.client = qdrant_client
-        self.llm_client = llm_client
+    def __init__(
+        self,
+        client: QdrantClient,
+        embed_model: BaseEmbedding,
+        collection_name: str = "documents",
+        model: str = "voyage-finance-2"
+    ):
+        """Initialize QdrantAdapter with necessary clients and configuration."""
+        self.client = client
         self.embed_model = embed_model
-        self.dense_dim = VECTOR_DIMENSIONS.get(model, 1024)  # Default to 1024 if model not found
-        self.collection_name = "documents"  # Add this if not defined elsewhere
+        self.collection_name = collection_name
+        self.model = model
+        self.anthropic_client = None  # Initialize if needed
         
-        # Initialize TF-IDF vectorizer
-        self.vectorizer = TfidfVectorizer(
-            lowercase=True,
-            strip_accents='unicode',
-            max_features=VECTOR_DIMENSIONS['sparse']  # Use sparse dimension from constants
-        )
-        
-        logger.info(f"Initializing QdrantAdapter with model: {model}")
-        
+        # Verify the client connection
         try:
-            # Test connection
-            start_time = time.time()
-            self.client.get_collection(COLLECTION_NAME)
-            connection_time = time.time() - start_time
-            logger.info(f"Connected to Qdrant at {self.client.host} in {connection_time:.2f}s")
-            
-            # Initialize vectorizer vocabulary
-            self._init_vectorizer()
-            
-            logger.info("Successfully initialized QdrantAdapter with {self.model}")
-            
+            self.client.get_collections()
+            logger.info("Successfully connected to Qdrant")
         except Exception as e:
-            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            logger.error(f"Failed to connect to Qdrant: {str(e)}")
             raise
 
     async def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
