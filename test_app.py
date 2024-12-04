@@ -160,50 +160,64 @@ def initialize_clients() -> bool:
             # Initialize Anthropic client
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
-            # Initialize QdrantAdapter directly with URL and API key
-            qdrant_adapter = QdrantAdapter(
-                url=st.secrets["QDRANT_URL"],
-                api_key=st.secrets["QDRANT_API_KEY"],
-                collection_name="documents",
-                embedding_model=DEFAULT_EMBEDDING_MODEL,
-                anthropic_client=anthropic_client
+            # Initialize Qdrant client first
+            qdrant_client = initialize_qdrant()
+            if not qdrant_client:
+                raise ValueError("Failed to initialize Qdrant client")
+            
+            # Initialize Voyage embedding model
+            embed_model = VoyageEmbedding(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                voyage_api_key=st.secrets["VOYAGE_API_KEY"]
             )
             
-            # Initialize Voyage client
-            voyage_client = voyageai.Client(api_key=st.secrets["VOYAGE_API_KEY"])
+            # Create QdrantAdapter instance
+            qdrant_adapter = QdrantAdapter(
+                client=qdrant_client,
+                embed_model=embed_model,
+                collection_name="documents",
+                model=DEFAULT_EMBEDDING_MODEL
+            )
             
             # Store in session state
             st.session_state.clients = {
-                'qdrant': qdrant_adapter,
+                'qdrant_adapter': qdrant_adapter,
+                'qdrant': qdrant_client,
                 'anthropic': anthropic_client,
-                'embed_model': voyage_client
+                'embed_model': embed_model
             }
         
-        # Validate clients
-        if not st.session_state.clients['qdrant']:
-            st.error("Failed to initialize Qdrant client")
-            return False
-            
-        if not st.session_state.clients['anthropic']:
-            st.error("Failed to initialize Anthropic client")
-            return False
-            
-        if not st.session_state.clients['embed_model']:
-            st.error("Failed to initialize Voyage client")
-            return False
-            
+        # Validate clients with proper error handling
+        for client_name in ['qdrant_adapter', 'qdrant', 'anthropic', 'embed_model']:
+            if client_name not in st.session_state.clients:
+                st.error(f"Missing {client_name} client")
+                return False
+            if st.session_state.clients[client_name] is None:
+                st.error(f"Failed to initialize {client_name} client")
+                return False
+        
         return True
         
     except Exception as e:
+        logger.error(f"Error initializing clients: {str(e)}")
         st.error(f"Error initializing clients: {str(e)}")
         return False
 
 def validate_clients():
     """Validate that all required clients are initialized."""
+    required_clients = ['qdrant_adapter', 'qdrant', 'anthropic', 'embed_model']
+    
     if not st.session_state.get('clients'):
+        logger.error("No clients found in session state")
         return False
-    return all(client in st.session_state.clients 
-              for client in ['anthropic', 'embed_model', 'qdrant'])
+    
+    for client in required_clients:
+        if client not in st.session_state.clients:
+            logger.error(f"Missing {client} client")
+            return False
+        if st.session_state.clients[client] is None:
+            logger.error(f"{client} client is None")
+            return False
 
 # Processing Functions
 def count_tokens(text: str) -> int:
@@ -888,7 +902,7 @@ with tab2:
                     perform_search_with_timeout(
                         query,
                         st.session_state.clients['embed_model'],
-                        st.session_state.clients['qdrant_adapter'],  # Updated to use adapter
+                        st.session_state.clients['qdrant_adapter'],
                         timeout=10
                     )
                 )
@@ -921,17 +935,14 @@ st.markdown("---")
 st.markdown("Powered by Alpine")
 
 # First, define the async search function
-async def perform_search(query: str, embed_model, qdrant_client):
+async def perform_search(query: str, embed_model, qdrant_adapter):
     """Perform async search operation."""
     try:
         # Get embedding asynchronously using the correct method
-        query_embedding = await embed_model.aembed(
-            query,
-            model_name=DEFAULT_EMBEDDING_MODEL
-        )
+        query_embedding = await embed_model.aget_query_embedding(query)
         
-        # Search using the embedding
-        results = qdrant_client.search(
+        # Search using the adapter
+        results = qdrant_adapter.search(
             query_text=query,
             query_vector=query_embedding,
             limit=5
@@ -942,12 +953,12 @@ async def perform_search(query: str, embed_model, qdrant_client):
         logger.error(f"Error in async search: {str(e)}")
         raise
 
-async def perform_search_with_timeout(query: str, embed_model, qdrant_client, timeout: int = 10):
+async def perform_search_with_timeout(query: str, embed_model, qdrant_adapter, timeout: int = 10):
     """Perform async search operation with timeout."""
     try:
         # Use asyncio.wait_for to add timeout
         results = await asyncio.wait_for(
-            perform_search(query, embed_model, qdrant_client),
+            perform_search(query, embed_model, qdrant_adapter),
             timeout=timeout
         )
         return results
