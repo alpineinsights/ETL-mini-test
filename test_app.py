@@ -97,7 +97,18 @@ def rate_limited_context(func, *args, **kwargs):
 def rate_limited_embedding(func, *args, **kwargs):
     return func(*args, **kwargs)
 
-# Utility Functions
+# Move cleanup functions to the top, before they're used
+def cleanup_clients():
+    """Clean up clients on initialization failure"""
+    if 'clients' in st.session_state:
+        for client in st.session_state.clients.values():
+            if hasattr(client, 'close'):
+                try:
+                    client.close()
+                except:
+                    pass
+        del st.session_state.clients
+
 def cleanup_temp_files():
     """Clean up any temporary files"""
     temp_dir = Path('.temp')
@@ -111,10 +122,7 @@ def cleanup_temp_files():
 def cleanup_session_state():
     """Clean up session state and resources on app restart"""
     try:
-        if 'clients' in st.session_state:
-            for client in st.session_state.clients.values():
-                if hasattr(client, 'close'):
-                    client.close()
+        cleanup_clients()  # Call cleanup_clients first
         cleanup_temp_files()
         st.session_state.clear()
     except Exception as e:
@@ -122,22 +130,25 @@ def cleanup_session_state():
 
 def initialize_session_state():
     """Initialize all session state variables with default values."""
-    if not st.session_state.get('clients'):
-        st.session_state.clients = {}
-    if not st.session_state.get('collection_name'):
-        st.session_state.collection_name = "documents"
-    if not st.session_state.get('chunk_size'):
-        st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
-    if not st.session_state.get('chunk_overlap'):
-        st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
-    if not st.session_state.get('processed_urls'):
-        st.session_state.processed_urls = set()
-    if not st.session_state.get('processing_metrics'):
-        st.session_state.processing_metrics = initialize_metrics()
-    if not st.session_state.get('llm_model'):
-        st.session_state.llm_model = DEFAULT_LLM_MODEL
-    if not st.session_state.get('context_prompt'):
-        st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
+    try:
+        if not st.session_state.get('clients'):
+            st.session_state.clients = {}
+        if not st.session_state.get('collection_name'):
+            st.session_state.collection_name = "documents"
+        if not st.session_state.get('chunk_size'):
+            st.session_state.chunk_size = DEFAULT_CHUNK_SIZE
+        if not st.session_state.get('chunk_overlap'):
+            st.session_state.chunk_overlap = DEFAULT_CHUNK_OVERLAP
+        if not st.session_state.get('processed_urls'):
+            st.session_state.processed_urls = set()
+        if not st.session_state.get('processing_metrics'):
+            st.session_state.processing_metrics = initialize_metrics()
+        if not st.session_state.get('llm_model'):
+            st.session_state.llm_model = DEFAULT_LLM_MODEL
+        if not st.session_state.get('context_prompt'):
+            st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
+    except Exception as e:
+        logger.error(f"Error initializing session state: {str(e)}")
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -1009,14 +1020,3 @@ async def perform_search_with_timeout(query: str, embed_model, qdrant_adapter, t
     except Exception as e:
         logger.error(f"Error in async search with timeout: {str(e)}")
         raise
-
-def cleanup_clients():
-    """Clean up clients on initialization failure"""
-    if 'clients' in st.session_state:
-        for client in st.session_state.clients.values():
-            if hasattr(client, 'close'):
-                try:
-                    client.close()
-                except:
-                    pass
-        del st.session_state.clients
