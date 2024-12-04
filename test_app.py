@@ -549,6 +549,35 @@ async def parse_document(url: str) -> Optional[Dict[str, Any]]:
             except:
                 pass
 
+# Add this near the top of the file, after the imports and before the UI code
+def parse_sitemap(url: str) -> List[str]:
+    """Parse XML sitemap and return list of URLs."""
+    try:
+        logger.info(f"Fetching sitemap from {url}")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        root = ET.fromstring(response.content)
+        urls = []
+        namespaces = [
+            './/{http://www.sitemaps.org/schemas/sitemap/0.9}loc',
+            './/loc'  # Try without namespace
+        ]
+        
+        for namespace in namespaces:
+            urls.extend([unquote(url.text) for url in root.findall(namespace)])
+        
+        if not urls:
+            logger.warning("No URLs found in sitemap")
+        else:
+            logger.info(f"Found {len(urls)} URLs in sitemap")
+            
+        return urls
+            
+    except Exception as e:
+        logger.error(f"Error parsing sitemap: {str(e)}")
+        raise
+
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
