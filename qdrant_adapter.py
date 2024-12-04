@@ -4,7 +4,7 @@ Handles both dense embeddings from Voyage and sparse embeddings from TF-IDF.
 """
 
 from qdrant_client import QdrantClient, models
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 import logging
@@ -15,6 +15,8 @@ import streamlit as st
 from ratelimit import limits, sleep_and_retry
 from pathlib import Path
 import time
+from llama_index import TextSplitter
+from urllib.parse import unquote
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -374,65 +376,43 @@ class QdrantAdapter:
         retry=retry_if_exception(is_overloaded_error)
     )
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
-        """Extract metadata with detailed logging."""
-        start_time = time.time()
-        logger.info(f"Extracting metadata for document: {url}")
-        
+        """Extract metadata from document text with proper string formatting."""
         try:
-            formatted_prompt = (
-                f"\n\nHuman: {DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])}"
-                f"\n\nAssistant:"
-            )
-
-            logger.info("Sending request to Anthropic API...")
-            response = self.anthropic_client.completions.create(
-                model="claude-2",
-                max_tokens_to_sample=300,
-                prompt=formatted_prompt
-            )
-            logger.info(f"Received response from Anthropic in {time.time() - start_time:.2f}s")
-
-            metadata = {
-                "company": None,
-                "date": None,
-                "fiscal_period": None,
-                "url": url,
-                "file_name": Path(url).name,
-                "creation_date": datetime.now().isoformat()
-            }
-
-            response_text = response.completion
-            logger.debug(f"Raw response: {response_text}")
-
-            # Parse response and update metadata
-            for line in response_text.strip().split('\n'):
-                if line.startswith('1.') and 'company' in line.lower():
-                    metadata['company'] = line.split(':')[-1].strip()
-                elif line.startswith('2.') and 'date' in line.lower():
-                    metadata['date'] = line.split(':')[-1].strip()
-                elif line.startswith('3.') and 'fiscal' in line.lower():
-                    metadata['fiscal_period'] = line.split(':')[-1].strip()
-
+            logger.info(f"Extracting metadata for document: {url}")
+            
+            # Try to extract metadata using Anthropic
+            try:
+                prompt = self.DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
+                response = self.anthropic_client.complete(
+                    prompt=f"\n\nHuman: {prompt}\n\nAssistant:",
+                    max_tokens_to_sample=300,
+                    model=self.llm_model
+                )
+                metadata = self._parse_metadata_response(response.completion)
+                logger.info("Successfully extracted metadata using Anthropic")
+            except Exception as e:
+                logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}")
+                metadata = self._extract_metadata_from_filename(url)
+                logger.info("Falling back to filename-based metadata")
+            
+            # Add standard fields
+            metadata.update({
+                'url': url,
+                'file_name': url.split('/')[-1],
+                'creation_date': datetime.now().isoformat()
+            })
+            
+            # URL decode any encoded values
+            for key, value in metadata.items():
+                if isinstance(value, str):
+                    metadata[key] = unquote(value)
+            
             logger.info(f"Successfully extracted metadata: {metadata}")
             return metadata
-
-        except Exception as e:
-            logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}", exc_info=True)
-            logger.info("Falling back to filename-based metadata")
             
-            # Fallback logic
-            filename = Path(url).name
-            parts = filename.replace('.pdf', '').split('_')
-            metadata = {
-                "company": parts[0] if len(parts) > 0 else "Unknown",
-                "fiscal_period": parts[1] if len(parts) > 1 else None,
-                "date": parts[2] if len(parts) > 2 else None,
-                "url": url,
-                "file_name": filename,
-                "creation_date": datetime.now().isoformat()
-            }
-            logger.info(f"Generated fallback metadata: {metadata}")
-            return metadata
+        except Exception as e:
+            logger.error(f"Error extracting metadata: {str(e)}")
+            raise
 
     def recover_collection(self) -> bool:
         """Attempt to recover collection if in a bad state."""
@@ -474,7 +454,7 @@ class QdrantAdapter:
             raise
 
     def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
-        """Process a document with detailed logging."""
+        """Process a document with detailed logging and proper error handling."""
         try:
             logger.info(f"Starting document processing for {url}")
             
@@ -494,35 +474,11 @@ class QdrantAdapter:
                     context = self._situate_context(doc_text, chunk)
                     logger.info(f"Generated context for chunk {i+1}")
                     
-                    # Create dense embedding
-                    try:
-                        dense_vector = self.embed_model.get_text_embedding(chunk)
-                        logger.info(f"Created dense embedding for chunk {i+1}")
-                    except Exception as e:
-                        logger.error(f"Failed to create dense embedding for chunk {i+1}: {str(e)}")
-                        raise
-                    
-                    # Create sparse embedding
-                    try:
-                        sparse_vector = self.compute_sparse_embedding(chunk)
-                        logger.info(f"Created sparse embedding for chunk {i+1}")
-                    except Exception as e:
-                        logger.error(f"Failed to create sparse embedding for chunk {i+1}: {str(e)}")
-                        raise
+                    # Create embeddings and point
+                    point = self._create_point_from_chunk(chunk, context, metadata)
+                    logger.info(f"Created point for chunk {i+1}")
                     
                     # Upsert to Qdrant
-                    chunk_id = f"{url}_{i}"
-                    point = self._create_point(
-                        id=chunk_id,
-                        dense_vector=dense_vector,
-                        sparse_vector=sparse_vector,
-                        payload={
-                            "chunk_text": chunk,
-                            "context": context,
-                            **metadata
-                        }
-                    )
-                    
                     self.client.upsert(
                         collection_name=self.collection_name,
                         points=[point],
@@ -557,4 +513,40 @@ class QdrantAdapter:
             return point
         except Exception as e:
             logger.error(f"Failed to create point {id}: {str(e)}")
+            raise
+
+    def _split_text(self, text: str, max_chunk_size: int = 500) -> List[str]:
+        """Split text into chunks using LlamaIndex TextSplitter."""
+        try:
+            logger.info(f"Splitting text into chunks with max size {max_chunk_size}")
+            splitter = TextSplitter(max_chunk_size=max_chunk_size)
+            chunks = splitter.split(text)
+            logger.info(f"Text split into {len(chunks)} chunks")
+            return chunks
+        except Exception as e:
+            logger.error(f"Error splitting text: {str(e)}")
+            raise
+
+    def _create_point_from_chunk(self, chunk: str, context: str, metadata: Dict) -> models.PointStruct:
+        """Create a point for Qdrant from a chunk with logging."""
+        try:
+            logger.info(f"Creating point from chunk {chunk}")
+            dense_vector = self.embed_model.get_text_embedding(chunk)
+            sparse_vector = self.compute_sparse_embedding(chunk)
+            point = models.PointStruct(
+                id=f"{metadata['url']}_{i}",
+                vector={
+                    "dense": dense_vector,
+                    "sparse": sparse_vector
+                },
+                payload={
+                    "chunk_text": chunk,
+                    "context": context,
+                    **metadata
+                }
+            )
+            logger.info(f"Successfully created point from chunk {chunk}")
+            return point
+        except Exception as e:
+            logger.error(f"Failed to create point from chunk {chunk}: {str(e)}")
             raise
