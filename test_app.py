@@ -510,7 +510,10 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
         logger.info(f"Starting to parse document: {url}")
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            result_type="text"
+            result_type="text",  # or "markdown"
+            verbose=True,
+            num_workers=8,
+            language="en"
         )
         
         # Download the file
@@ -520,27 +523,24 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             temp_file.write(response.content)
             temp_path = temp_file.name
-        
-        # Use the correct method for the LlamaParse version
-        try:
-            # Try newer version method first
-            result = await parser.aload(temp_path)
-        except AttributeError:
-            # Fallback to older version method
-            result = parser.load(temp_path)
-        
-        return result
-        
+            
+            try:
+                # Use aload_data for async operation
+                result = await parser.aload_data(temp_path)
+                if isinstance(result, list):
+                    # If multiple documents returned, join their text
+                    return "\n\n".join(doc.text for doc in result)
+                return result.text
+            finally:
+                # Clean up temp file
+                try:
+                    os.remove(temp_path)
+                except Exception as e:
+                    logger.error(f"Error cleaning up temp file: {str(e)}")
+                    
     except Exception as e:
         logger.error(f"Error parsing document {url}: {str(e)}")
         raise
-    finally:
-        # Cleanup temp file
-        if 'temp_path' in locals():
-            try:
-                os.unlink(temp_path)
-            except Exception as e:
-                logger.error(f"Error cleaning temp file: {str(e)}")
 
 # Add this near the top of the file, after the imports and before the UI code
 def parse_sitemap(url: str) -> List[str]:
