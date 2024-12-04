@@ -32,21 +32,13 @@ VECTOR_DIMENSIONS = {
     "sparse": 768  # TF-IDF sparse vector dimension
 }
 
-DOCUMENT_CONTEXT_PROMPT = """Please analyze this document and extract the following metadata:
-- Company name
-- Fiscal period (Q1, Q2, Q3, Q4, FY)
-- Year
-- Document type (report, transcript, presentation)
+DOCUMENT_CONTEXT_PROMPT = """Please analyze this document content and extract key metadata in JSON format with the following fields:
+- company: Company name
+- fiscal_period: Fiscal period (e.g. Q1 2024)
+- date: Document date
+- doc_type: Document type (report/transcript/presentation)
 
-Return the metadata in JSON format like this:
-{
-    "company": "company name",
-    "fiscal_period": "Q1/Q2/Q3/Q4/FY",
-    "date": "YYYY",
-    "doc_type": "report/transcript/presentation"
-}
-
-Document text:
+Document content:
 {doc_content}
 """
 
@@ -86,6 +78,17 @@ def is_overloaded_error(exception):
 class QdrantAdapter:
     """Handles interaction with Qdrant vector database for hybrid search."""
     
+    # Add the prompt as a class constant
+    DOCUMENT_CONTEXT_PROMPT = """Please analyze this document content and extract key metadata in JSON format with the following fields:
+    - company: Company name
+    - fiscal_period: Fiscal period (e.g. Q1 2024)
+    - date: Document date
+    - doc_type: Document type (report/transcript/presentation)
+    
+    Document content:
+    {doc_content}
+    """
+
     def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
         """
         Initialize Qdrant client with logging.
@@ -132,9 +135,6 @@ class QdrantAdapter:
             # Ensure the collection exists
             self._ensure_collection_exists()
             logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
-
-            # Add the prompt as a class attribute
-            self.DOCUMENT_CONTEXT_PROMPT = DOCUMENT_CONTEXT_PROMPT  # Use the one defined at module level
 
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}", exc_info=True)
@@ -451,7 +451,7 @@ class QdrantAdapter:
             logger.error(f"Error generating context: {str(e)}")
             raise
 
-    def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
+    def process_document(self, doc_text: str, url: str, chunk_size: int = 500) -> bool:
         """Process a document with detailed logging and proper error handling."""
         try:
             logger.info(f"Starting document processing for {url}")
@@ -461,7 +461,7 @@ class QdrantAdapter:
             logger.info(f"Metadata extracted successfully for {url}")
             
             # Split into chunks - pass only required arguments
-            chunks = self._split_text(doc_text, chunk_size, chunk_overlap)
+            chunks = self._split_text(doc_text, metadata, chunk_size)
             logger.info(f"Document split into {len(chunks)} chunks")
             
             for i, chunk in enumerate(chunks):
@@ -469,11 +469,11 @@ class QdrantAdapter:
                     logger.info(f"Processing chunk {i+1}/{len(chunks)}")
                     
                     # Generate context
-                    context = self._situate_context(doc_text, chunk)
+                    context = self._situate_context(doc_text, chunk['text'])
                     logger.info(f"Generated context for chunk {i+1}")
                     
                     # Create embeddings and point
-                    point = self._create_point_from_chunk(chunk, context, metadata)
+                    point = self._create_point_from_chunk(chunk['text'], context, chunk['metadata'])
                     logger.info(f"Created point for chunk {i+1}")
                     
                     # Upsert to Qdrant
@@ -513,17 +513,28 @@ class QdrantAdapter:
             logger.error(f"Failed to create point {id}: {str(e)}")
             raise
 
-    def _split_text(self, text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
-        """Split text into chunks using SentenceSplitter from LlamaIndex."""
+    def _split_text(self, text: str, metadata: Dict[str, Any], chunk_size: int = 500) -> List[Dict[str, Any]]:
+        """Split text into chunks with metadata."""
         try:
-            logger.info(f"Splitting text into chunks with size {chunk_size} and overlap {chunk_overlap}")
+            logger.info(f"Splitting text into chunks with size {chunk_size}")
             splitter = SentenceSplitter(
                 chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
+                chunk_overlap=50  # Fixed overlap
             )
-            chunks = splitter.split_text(text)  # Changed from split() to split_text()
-            logger.info(f"Text split into {len(chunks)} chunks")
-            return chunks
+            chunks = splitter.split_text(text)
+            
+            # Add metadata to each chunk
+            processed_chunks = []
+            for i, chunk_text in enumerate(chunks):
+                processed_chunks.append({
+                    'text': chunk_text,
+                    'metadata': metadata,
+                    'chunk_id': f"{metadata.get('file_name', 'doc')}_{i}"
+                })
+                
+            logger.info(f"Text split into {len(processed_chunks)} chunks")
+            return processed_chunks
+            
         except Exception as e:
             logger.error(f"Error splitting text: {str(e)}")
             raise
