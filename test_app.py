@@ -382,7 +382,7 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with caching and proper error handling."""
+    """Process chunks asynchronously with proper embedding and context generation."""
     try:
         processed_chunks = []
         total_chunks = len(chunks)
@@ -392,9 +392,9 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         status_text = st.empty()
         status_text.text(f"Processing {total_chunks} chunks...")
         
-        # Generate document-level context
+        # Generate document-level context first
         try:
-            doc_context_response = await rate_limited_context(
+            doc_context = await rate_limited_context(
                 st.session_state.clients['anthropic'].messages.create,
                 model=DEFAULT_LLM_MODEL,
                 max_tokens=300,
@@ -407,66 +407,54 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         except Exception as e:
             logger.error(f"Error generating document context: {str(e)}")
             raise
-        
-        for i, chunk in enumerate(chunks):
-            try:
-                # Generate context with rate limiting
-                chunk_context = await rate_limited_context(
-                    generate_chunk_context,
-                    chunk['text'],
-                    doc_context_response
-                )
-                st.session_state.processing_metrics['stages']['context']['success'] += 1
-                
-                # Generate embedding with rate limiting
+
+        # Process chunks with batching for better performance
+        batch_size = 5
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            batch_tasks = []
+            
+            for chunk in batch:
                 try:
-                    # Direct embedding call to Voyage API
-                    embedding_result = await rate_limited_embedding(
-                        st.session_state.clients['embed_model'].embed_async,  # Use async version
+                    # Generate context
+                    context = await generate_chunk_context(chunk['text'], doc_context)
+                    
+                    # Generate embedding using Voyage
+                    embedding = st.session_state.clients['embed_model'].embed(
                         texts=[chunk['text']],
                         model=DEFAULT_EMBEDDING_MODEL
                     )
                     
-                    # Extract embedding from result
-                    dense_embedding = embedding_result[0]  # First element of returned list
-                    st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
+                    # Access embedding values correctly
+                    dense_vector = embedding[0]  # Get first embedding array
                     
-                except Exception as e:
-                    logger.error(f"Error generating embedding: {str(e)}")
-                    st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
-                    continue
-                
-                # Upsert to Qdrant
-                try:
+                    # Upsert to Qdrant
                     success = await st.session_state.clients['qdrant'].upsert_chunk(
                         chunk_text=chunk['text'],
-                        context_text=chunk_context,
-                        dense_embedding=dense_embedding,
+                        context_text=context,
+                        dense_embedding=dense_vector,
                         metadata=metadata,
                         chunk_id=str(i)
                     )
+                    
                     if success:
-                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
-                        st.session_state.processing_metrics['processed_chunks'] += 1
                         processed_chunks.append({
                             'text': chunk['text'],
-                            'context': chunk_context,
-                            'embedding': dense_embedding
+                            'context': context,
+                            'embedding': dense_vector
                         })
+                        st.session_state.processing_metrics['processed_chunks'] += 1
+                        
                 except Exception as e:
-                    logger.error(f"Error upserting chunk: {str(e)}")
-                    st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                    logger.error(f"Error processing chunk: {str(e)}")
+                    st.session_state.processing_metrics['errors'] += 1
                     continue
                 
-                # Update progress
-                chunk_progress.progress((i + 1) / total_chunks)
-                status_text.text(f"Processed chunk {i + 1}/{total_chunks}")
-                
-            except Exception as e:
-                logger.error(f"Error processing chunk {i}: {str(e)}")
-                st.session_state.processing_metrics['errors'] += 1
-                continue
-        
+            # Update progress
+            progress = min((i + batch_size) / total_chunks, 1.0)
+            chunk_progress.progress(progress)
+            status_text.text(f"Processed chunks {i + 1}-{min(i + batch_size, total_chunks)} of {total_chunks}")
+            
         return processed_chunks
         
     except Exception as e:
