@@ -161,28 +161,13 @@ def initialize_clients():
         if not qdrant_client:
             raise ValueError("Failed to initialize Qdrant client")
 
-        # Initialize VoyageAI embedding model
+        # Initialize VoyageAI embedding model with correct parameters
         embed_model = VoyageEmbedding(
-            api_key=st.secrets["VOYAGE_API_KEY"],
             model_name=DEFAULT_EMBEDDING_MODEL,
-            embed_batch_size=10  # Optional: adjust based on your needs
+            voyage_api_key=st.secrets["VOYAGE_API_KEY"]
         )
 
-        # Initialize QdrantAdapter with the clients
-        qdrant_adapter = QdrantAdapter(
-            client=qdrant_client,  # Pass the client instead of url
-            embed_model=embed_model,
-            collection_name="documents",  # Make sure this matches your collection name
-            model=DEFAULT_EMBEDDING_MODEL
-        )
-
-        # Store clients in session state
-        st.session_state.clients = {
-            'qdrant': qdrant_adapter,
-            'embed_model': embed_model,
-        }
-
-        return True
+        return {'qdrant': qdrant_client, 'embed_model': embed_model}
 
     except Exception as e:
         st.error(f"Error initializing clients: {str(e)}")
