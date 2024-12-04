@@ -159,7 +159,7 @@ def initialize_clients() -> bool:
         if 'clients' not in st.session_state:
             logger.info("Starting client initialization...")
             
-            # 1. Initialize base Qdrant client first
+            # 1. Initialize base Qdrant client with proper configuration
             logger.info("Initializing Qdrant client...")
             qdrant_client = QdrantClient(
                 url=st.secrets["QDRANT_URL"],
@@ -168,8 +168,14 @@ def initialize_clients() -> bool:
                 timeout=60,
                 grpc_options=GRPC_OPTIONS
             )
-            if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
+            
+            # Test the connection
+            try:
+                qdrant_client.get_collections()
+                logger.info("Successfully connected to Qdrant")
+            except Exception as e:
+                logger.error(f"Failed to connect to Qdrant: {str(e)}")
+                raise ValueError("Qdrant connection test failed")
             
             # 2. Initialize Voyage embedding model
             logger.info("Initializing Voyage embedding model...")
@@ -184,15 +190,20 @@ def initialize_clients() -> bool:
                 api_key=st.secrets["ANTHROPIC_API_KEY"]
             )
             
-            # 4. Initialize QdrantAdapter with the base client
+            # 4. Initialize QdrantAdapter with all required components
             logger.info("Initializing QdrantAdapter...")
-            qdrant_adapter = QdrantAdapter(
-                client=qdrant_client,  # Pass the initialized client
-                embed_model=embed_model,
-                collection_name="documents",
-                model=DEFAULT_EMBEDDING_MODEL,
-                anthropic_client=anthropic_client  # Pass the Anthropic client
-            )
+            try:
+                qdrant_adapter = QdrantAdapter(
+                    client=qdrant_client,
+                    embed_model=embed_model,
+                    collection_name="documents",
+                    model=DEFAULT_EMBEDDING_MODEL,
+                    anthropic_client=anthropic_client
+                )
+                logger.info("QdrantAdapter initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+                raise
             
             # Store all clients in session state
             st.session_state.clients = {
