@@ -323,64 +323,45 @@ def create_semantic_chunks(text: str) -> List[Dict[str, Any]]:
         logger.error(f"Error creating semantic chunks: {str(e)}")
         raise
 
-async def process_url(url: str) -> Optional[Dict[str, Any]]:
-    """Process a single URL and return chunks and metadata"""
+async def process_url(url: str) -> Optional[Dict]:
+    """Process a single URL with context and embeddings."""
     try:
-        # Download PDF
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
-        
-        # Initialize parser with optimized settings
-        parser = LlamaParse(
-            api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            fast_mode=True,          # Enable fast mode for faster processing
-            num_workers=8,           # Maximum allowed workers (must be < 10)
-            check_interval=2,        # Reduced check interval for faster updates
-            verbose=False,           # Disable verbose for better performance
-            language="en",           # Specify language
-            result_type="text"       # Use text output since we're in fast mode
-        )
-        
-        # Load and parse document using asynchronous batch processing
-        docs = await parser.aload_data(temp_path)
-        
-        # Extract and clean text content
-        full_text = "\n\n".join(
-            getattr(doc, 'text', '') or getattr(doc, 'content', '') 
-            for doc in docs if doc
-        ).strip()
-        
-        if not full_text:
-            raise ValueError("No text content found in document")
-        
-        # Clean up the text
-        full_text = (full_text
-            .replace('\x00', ' ')    # Remove null bytes
-            .replace('\r', '\n')     # Normalize line endings
-            .replace('\t', ' ')      # Replace tabs with spaces
-        )
-        full_text = ' '.join(full_text.split())  # Normalize whitespace
-        
-        # Extract metadata and create chunks
-        metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
-        chunks = create_semantic_chunks(full_text)
-        
-        return {
-            "chunks": chunks,
-            "metadata": metadata,
-            "text": full_text
+        # Parse document
+        doc = parse_document(url)
+        if not doc:
+            raise ValueError(f"Failed to parse document: {url}")
+
+        # Generate document-level context
+        doc_context = await generate_context(doc['text'], st.session_state.clients['anthropic'])
+        if not doc_context:
+            raise ValueError(f"Failed to generate document context for {url}")
+
+        # Create chunks
+        chunks = create_chunks(doc['text'])
+        if not chunks:
+            raise ValueError(f"No chunks created for {url}")
+
+        # Process chunks with context and embeddings
+        metadata = {
+            'url': url,
+            'title': doc.get('title', ''),
+            'doc_context': doc_context,
+            'creation_date': datetime.now().isoformat()
         }
+
+        processed_chunks = await process_chunks_async(chunks, metadata, doc['text'])
         
+        if processed_chunks:
+            return {
+                'chunks': processed_chunks,
+                'metadata': metadata
+            }
+        
+        return None
+
     except Exception as e:
         logger.error(f"Error processing URL {url}: {str(e)}")
         raise
-    finally:
-        if 'temp_path' in locals():
-            os.unlink(temp_path)
 
 async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[str, Any]]:
     """Process a single URL asynchronously"""
@@ -501,37 +482,8 @@ def display_metrics():
             st.metric("Total Tokens", metrics['total_tokens'])
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
-async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
-    """Generate context for a chunk using the cached document context."""
-    try:
-        response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
-            model=DEFAULT_LLM_MODEL,
-            max_tokens=300,
-            system=[{
-                "type": "text",
-                "text": DEFAULT_CONTEXT_PROMPT,
-                "cache_control": {"type": "ephemeral"}
-            }],
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
-                    }
-                ]
-            }]
-        )
-        
-        st.session_state.processing_metrics['stages']['context']['success'] += 1
-        return response.content[0].text
-        
-    except Exception as e:
-        logger.error(f"Error generating chunk context: {str(e)}")
-        st.session_state.processing_metrics['stages']['context']['failed'] += 1
-        raise
-
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
+    """Process chunks asynchronously with context and embeddings."""
     try:
         processed_chunks = []
         
@@ -554,6 +506,10 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                 # Generate context for chunk
                 chunk_context = await generate_chunk_context(chunk['text'], metadata['doc_context'])
                 
+                if not chunk_context:
+                    logger.error(f"Failed to generate context for chunk {i}")
+                    continue
+
                 # Upsert to Qdrant with both dense and sparse vectors
                 try:
                     success = st.session_state.clients['qdrant'].upsert(
@@ -587,6 +543,36 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         logger.error(f"Error in process_chunks_async: {str(e)}")
         raise
 
+async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
+    """Generate context for a chunk using the cached document context."""
+    try:
+        response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": DEFAULT_CONTEXT_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
+                    }
+                ]
+            }]
+        )
+        
+        st.session_state.processing_metrics['stages']['context']['success'] += 1
+        return response.content[0].text
+        
+    except Exception as e:
+        logger.error(f"Error generating chunk context: {str(e)}")
+        st.session_state.processing_metrics['stages']['context']['failed'] += 1
+        raise
+
 def validate_anthropic_client(client):
     """Validate the Anthropic client by making a test call."""
     try:
@@ -606,6 +592,26 @@ def validate_anthropic_client(client):
             raise ValueError(f"API error: {str(e)}")
     except Exception as e:
         raise ValueError(f"Anthropic client validation failed: {str(e)}")
+
+async def generate_context(text: str, anthropic_client) -> Optional[str]:
+    """Generate context for a chunk using Claude with a user-modifiable prompt."""
+    try:
+        # Use the default context prompt from the code
+        context_prompt = st.session_state.get('context_prompt', DEFAULT_CONTEXT_PROMPT)
+        
+        # Combine prompt with text
+        full_prompt = f"{context_prompt}\n\nText to process:\n{text}"
+
+        response = await anthropic_client.messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=150,
+            messages=[{"role": "user", "content": full_prompt}]
+        )
+        
+        return response.content[0].text.strip()
+    except Exception as e:
+        st.error(f"Error generating context: {str(e)}")
+        return None
 
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
