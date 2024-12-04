@@ -17,6 +17,7 @@ from pathlib import Path
 import time
 from llama_index.core.node_parser import SentenceSplitter
 from urllib.parse import unquote
+import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -31,17 +32,22 @@ VECTOR_DIMENSIONS = {
     "sparse": 768  # TF-IDF sparse vector dimension
 }
 
-DOCUMENT_CONTEXT_PROMPT = """
-<document>
+DOCUMENT_CONTEXT_PROMPT = """Please analyze this document and extract the following metadata:
+- Company name
+- Fiscal period (Q1, Q2, Q3, Q4, FY)
+- Year
+- Document type (report, transcript, presentation)
+
+Return the metadata in JSON format like this:
+{
+    "company": "company name",
+    "fiscal_period": "Q1/Q2/Q3/Q4/FY",
+    "date": "YYYY",
+    "doc_type": "report/transcript/presentation"
+}
+
+Document text:
 {doc_content}
-</document>
-
-Based on the ENTIRE document above, identify:
-1. The main company name and any secondary companies mentioned (use EXACT spellings)
-2. The document date (YYYY.MM.DD format)
-3. Any fiscal periods mentioned (use BOTH abbreviated tags like Q1 2024 AND verbose tags like first quarter 2024)
-
-This information will be used for ALL chunks from this document.
 """
 
 CHUNK_CONTEXT_PROMPT = """
@@ -375,40 +381,29 @@ class QdrantAdapter:
         stop=stop_after_attempt(5),
         retry=retry_if_exception(is_overloaded_error)
     )
-    def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
-        """Extract metadata from document text with proper string formatting."""
+    def extract_metadata(self, doc_text: str, url: str) -> Dict[str, str]:
+        """Extract metadata using LLM first, fallback to filename parsing."""
         try:
-            logger.info(f"Extracting metadata for document: {url}")
-            
-            # Try to extract metadata using Anthropic
+            # Try LLM-based extraction first
             try:
                 prompt = self.DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
-                response = self.anthropic_client.complete(
-                    prompt=f"\n\nHuman: {prompt}\n\nAssistant:",
-                    max_tokens_to_sample=300,
-                    model=self.llm_model
+                response = self.llm_client.messages.create(
+                    model=self.llm_model,
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": prompt}]
                 )
-                metadata = self._parse_metadata_response(response.completion)
-                logger.info("Successfully extracted metadata using Anthropic")
+                metadata = json.loads(response.content)
+                metadata.update({
+                    'url': url,
+                    'file_name': url.split('/')[-1],
+                    'creation_date': datetime.now().isoformat()
+                })
+                return metadata
             except Exception as e:
                 logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}")
-                metadata = self._extract_metadata_from_filename(url)
-                logger.info("Falling back to filename-based metadata")
-            
-            # Add standard fields
-            metadata.update({
-                'url': url,
-                'file_name': url.split('/')[-1],
-                'creation_date': datetime.now().isoformat()
-            })
-            
-            # URL decode any encoded values
-            for key, value in metadata.items():
-                if isinstance(value, str):
-                    metadata[key] = unquote(value)
-            
-            logger.info(f"Successfully extracted metadata: {metadata}")
-            return metadata
+                
+            # Fallback to filename-based extraction
+            return self._extract_metadata_from_filename(url)
             
         except Exception as e:
             logger.error(f"Error extracting metadata: {str(e)}")
@@ -550,3 +545,41 @@ class QdrantAdapter:
         except Exception as e:
             logger.error(f"Failed to create point from chunk {chunk}: {str(e)}")
             raise
+
+    def _extract_metadata_from_filename(self, url: str) -> Dict[str, str]:
+        """Extract metadata from filename when LLM extraction fails."""
+        try:
+            # Get filename from URL
+            filename = url.split('/')[-1]
+            filename = unquote(filename)  # URL decode
+            
+            # Split filename into components
+            parts = filename.replace('.pdf', '').split('_')
+            
+            # Extract components
+            company = parts[0]
+            fiscal_period = parts[1]
+            year = parts[2]
+            doc_type = parts[3] if len(parts) > 3 else 'unknown'
+            
+            metadata = {
+                'company': company,
+                'fiscal_period': fiscal_period,
+                'date': year,
+                'doc_type': doc_type,
+                'url': url,
+                'file_name': filename,
+                'creation_date': datetime.now().isoformat()
+            }
+            
+            logger.info(f"Generated fallback metadata: {metadata}")
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Error extracting metadata from filename: {str(e)}")
+            # Return basic metadata if extraction fails
+            return {
+                'url': url,
+                'file_name': url.split('/')[-1],
+                'creation_date': datetime.now().isoformat()
+            }
