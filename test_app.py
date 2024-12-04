@@ -360,7 +360,7 @@ def display_metrics():
     with col1:
         st.metric("Documents Processed", metrics['processed_docs'])
         st.metric("Total Chunks", metrics['total_chunks'])
-        st.metric("Errors", metrics['errors'])
+        st.metric("Errors", metrics.get('errors', 0))
         
     with col2:
         st.metric("Total Tokens", metrics.get('total_tokens', 0))
@@ -381,7 +381,7 @@ def display_metrics():
         st.metric("Processing Time", f"{elapsed.total_seconds():.2f}s")
 
     # Add any warnings or errors
-    if metrics['errors'] > 0:
+    if metrics.get('errors', 0) > 0:
         st.warning(f"Encountered {metrics['errors']} errors during processing")
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
