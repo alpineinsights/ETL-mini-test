@@ -290,9 +290,19 @@ async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
         st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
 
+def initialize_ui_components():
+    """Initialize UI components in session state."""
+    if 'progress_bar' not in st.session_state:
+        st.session_state.progress_bar = st.progress(0.0)
+    if 'status_text' not in st.session_state:
+        st.session_state.status_text = st.empty()
+
 async def process_urls_async(urls: List[str]):
     """Process URLs asynchronously with better error handling and progress tracking."""
     try:
+        # Initialize UI components
+        initialize_ui_components()
+        
         for i, url in enumerate(urls, 1):
             try:
                 logger.info(f"Processing document {i}/{len(urls)}: {url}")
@@ -309,6 +319,7 @@ async def process_urls_async(urls: List[str]):
                     st.session_state.processing_metrics['errors'] += 1
                     continue
                 
+                logger.info(f"Starting document processing for {url}")
                 # Process document
                 success = st.session_state.clients['qdrant'].process_document(
                     doc_text=doc_text,
@@ -326,6 +337,10 @@ async def process_urls_async(urls: List[str]):
                 logger.error(f"Error processing {url}: {str(e)}")
                 st.session_state.processing_metrics['errors'] += 1
                 continue
+                
+        # Reset progress bar when done
+        st.session_state.progress_bar.progress(1.0)
+        st.session_state.status_text.text("Processing complete!")
                 
     except Exception as e:
         logger.error(f"Error in process_urls_async: {str(e)}")
@@ -843,27 +858,22 @@ with tab1:
     if st.button("Process Sitemap"):
         st.session_state.processing_metrics = initialize_metrics()
         try:
-            with st.spinner("Parsing sitemap..."):
-                urls = parse_sitemap(sitemap_url)
-                if not urls:
-                    st.warning("No URLs found to process")
-                    st.stop()
+            with st.spinner("Processing documents..."):
+                # Initialize UI components before processing
+                initialize_ui_components()
                 
-                st.session_state.processing_metrics['total_docs'] = len(urls)
-                st.session_state.processing_metrics['start_time'] = datetime.now()
+                sitemap_url = "https://contextrag.s3.eu-central-2.amazonaws.com/sitemap.xml"
+                urls = fetch_sitemap(sitemap_url)
                 
-                # Create progress bar
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Run async processing
-                asyncio.run(process_urls_async(urls))
-                
-                save_processed_urls(st.session_state.processed_urls)
-                st.success("Processing complete!")
-                
+                if urls:
+                    st.session_state.processing_metrics['total_docs'] = len(urls)
+                    asyncio.run(process_urls_async(urls))
+                else:
+                    st.error("No URLs found in sitemap")
+                    
         except Exception as e:
             st.error(f"Error processing sitemap: {str(e)}")
+            logger.error(f"Error processing sitemap: {str(e)}")
     
     # Display metrics
     st.header("Processing Metrics")
