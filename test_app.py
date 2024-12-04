@@ -885,36 +885,78 @@ with tab2:
     
     if query:
         try:
-            # Generate query embedding using correct method
-            query_embedding = await st.session_state.clients['embed_model'].aget_query_embedding(query)
+            with st.spinner("Searching documents..."):
+                loop = asyncio.get_event_loop()
+                results = loop.run_until_complete(
+                    perform_search_with_timeout(
+                        query,
+                        st.session_state.clients['embed_model'],
+                        st.session_state.clients['qdrant'],
+                        timeout=10  # 10 seconds timeout
+                    )
+                )
+                
+                if not results:
+                    st.info("No matching documents found.")
+                else:
+                    # Display results
+                    for i, result in enumerate(results, 1):
+                        with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
+                            st.write("**Original Text:**")
+                            st.write(result['payload']['chunk_text'])
+                            st.write("**Context:**")
+                            st.write(result['payload']['context'])
+                            st.write("**Metadata:**")
+                            display_metadata = {
+                                k: result['payload'].get(k, "") 
+                                for k in ["company", "date", "fiscal_period", "creation_date", "file_name", "url"]
+                            }
+                            st.json(display_metadata)
             
-            # Search using the embedding
-            results = st.session_state.clients['qdrant'].search(
-                query_text=query,
-                query_vector=query_embedding,
-                limit=5
-            )
-            
-            if not results:
-                st.info("No matching documents found.")
-            else:
-                # Display results
-                for i, result in enumerate(results, 1):
-                    with st.expander(f"Result {i} (Score: {result['score']:.3f})"):
-                        st.write("**Original Text:**")
-                        st.write(result['payload']['chunk_text'])
-                        st.write("**Context:**")
-                        st.write(result['payload']['context'])
-                        st.write("**Metadata:**")
-                        display_metadata = {
-                            k: result['payload'].get(k, "") 
-                            for k in ["company", "date", "fiscal_period", "creation_date", "file_name", "url"]
-                        }
-                        st.json(display_metadata)
-            
+        except TimeoutError:
+            st.error("Search operation timed out. Please try again.")
         except Exception as e:
             st.error(f"Error performing search: {str(e)}")
+            logger.error(f"Search error: {str(e)}")
 
 # Footer
 st.markdown("---")
 st.markdown("Powered by Alpine")
+
+# First, define the async search function
+async def perform_search(query: str, embed_model, qdrant_client):
+    """Perform async search operation."""
+    try:
+        # Get embedding asynchronously
+        query_embedding = await embed_model.aget_query_embedding(
+            query,
+            model_name=DEFAULT_EMBEDDING_MODEL
+        )
+        
+        # Search using the embedding (this is synchronous, but that's okay)
+        results = qdrant_client.search(
+            query_text=query,
+            query_vector=query_embedding,
+            limit=5
+        )
+        
+        return results
+    except Exception as e:
+        logger.error(f"Error in async search: {str(e)}")
+        raise
+
+async def perform_search_with_timeout(query: str, embed_model, qdrant_client, timeout: int = 10):
+    """Perform async search operation with timeout."""
+    try:
+        # Use asyncio.wait_for to add timeout
+        results = await asyncio.wait_for(
+            perform_search(query, embed_model, qdrant_client),
+            timeout=timeout
+        )
+        return results
+    except asyncio.TimeoutError:
+        logger.error("Search operation timed out")
+        raise TimeoutError("Search operation took too long")
+    except Exception as e:
+        logger.error(f"Error in async search with timeout: {str(e)}")
+        raise
