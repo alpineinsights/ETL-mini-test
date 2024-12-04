@@ -144,8 +144,8 @@ class QdrantAdapter:
             # Process each chunk
             for chunk in chunks:
                 try:
-                    # Generate dense embedding
-                    dense_vector = await self.embed_model.aembed_query(chunk['text'])
+                    # Generate dense embedding - Updated to use correct method
+                    dense_vector = await self.embed_model.aget_query_embedding(chunk['text'])
                     
                     # Generate sparse embedding
                     sparse_vector = self._generate_sparse_vector(chunk['text'])
