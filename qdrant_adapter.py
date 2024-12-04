@@ -550,13 +550,24 @@ class QdrantAdapter:
             if not self.embed_model:
                 raise ValueError("Embedding model not initialized")
             
-            # Use the new embedding interface
-            embedding = self.embed_model.get_text_embedding(
-                text,
-                model_name=self.model
-            )
+            # Use the correct method name
+            embedding = self.embed_model.get_query_embedding(text)
             
             return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
+            raise
+
+    async def get_embedding_async(self, text: str) -> List[float]:
+        """Get dense embedding for text using VoyageAI asynchronously."""
+        try:
+            if not self.embed_model:
+                raise ValueError("Embedding model not initialized")
+            
+            # Use the correct async method name
+            embedding = await self.embed_model.aget_query_embedding(text)
+            
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating embedding asynchronously: {str(e)}")
             raise
