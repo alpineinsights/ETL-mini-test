@@ -132,24 +132,11 @@ def initialize_session_state():
     if not st.session_state.get('processed_urls'):
         st.session_state.processed_urls = set()
     if not st.session_state.get('processing_metrics'):
-        st.session_state.processing_metrics = {
-            'start_time': None,
-            'total_docs': 0,
-            'processed_docs': 0,
-            'total_chunks': 0,
-            'processed_chunks': 0,
-            'errors': 0,
-            'stages': {
-                'context': {'success': 0, 'failed': 0},
-                'dense_vectors': {'success': 0, 'failed': 0},
-                'sparse_vectors': {'success': 0, 'failed': 0},
-                'upserts': {'success': 0, 'failed': 0}
-            },
-            'documents_processed': 0,
-            'chunks_created': 0,
-            'embedding_time': 0,
-            'total_tokens': 0
-        }
+        st.session_state.processing_metrics = initialize_metrics()
+    if not st.session_state.get('llm_model'):
+        st.session_state.llm_model = DEFAULT_LLM_MODEL
+    if not st.session_state.get('context_prompt'):
+        st.session_state.context_prompt = DEFAULT_CONTEXT_PROMPT
 
 def validate_environment():
     """Validate all required environment variables are set"""
@@ -292,9 +279,9 @@ async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
         raise
 
 def initialize_ui_components():
-    """Initialize UI components in session state."""
+    """Initialize UI components for processing status."""
     if 'progress_bar' not in st.session_state:
-        st.session_state.progress_bar = st.progress(0.0)
+        st.session_state.progress_bar = st.progress(0)
     if 'status_text' not in st.session_state:
         st.session_state.status_text = st.empty()
 
@@ -352,22 +339,25 @@ def save_processed_urls(urls: set) -> None:
     except Exception as e:
         logger.error(f"Error saving processed URLs: {str(e)}")
 
-def initialize_metrics():
-    """Initialize or reset processing metrics with all required keys."""
+def initialize_metrics() -> Dict[str, Any]:
+    """Initialize processing metrics with default values."""
     return {
-        'start_time': None,
+        'start_time': datetime.now().isoformat(),
         'total_docs': 0,
         'processed_docs': 0,
         'total_chunks': 0,
         'processed_chunks': 0,
-        'total_tokens': 0,
         'errors': 0,
         'stages': {
             'context': {'success': 0, 'failed': 0},
             'dense_vectors': {'success': 0, 'failed': 0},
             'sparse_vectors': {'success': 0, 'failed': 0},
             'upserts': {'success': 0, 'failed': 0}
-        }
+        },
+        'documents_processed': 0,
+        'chunks_created': 0,
+        'embedding_time': 0,
+        'total_tokens': 0
     }
 
 def display_metrics():
@@ -538,7 +528,7 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
     try:
         logger.info(f"Starting to parse document: {url}")
         parser = LlamaParse(
-            api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
+            api_key=st.secrets["LLAMAPARSE_API_KEY"],
             result_type="text"  # "markdown" or "text"
         )
         
@@ -829,6 +819,7 @@ with st.sidebar:
             "claude-3-opus-20240229"
         ],
         index=0,
+        key='llm_model',  # This will automatically update session state
         help="Select the LLM model to use for context generation"
     )
     
@@ -866,6 +857,7 @@ with st.sidebar:
         "Context Prompt",
         value=DEFAULT_CONTEXT_PROMPT,
         height=300,
+        key='context_prompt',  # This will automatically update session state
         help="Prompt template for context generation"
     )
 
