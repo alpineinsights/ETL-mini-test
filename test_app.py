@@ -236,18 +236,23 @@ def count_tokens(text: str) -> int:
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
 )
-async def generate_document_context(text: str) -> str:
-    """Generate context for the entire document."""
+async def generate_document_context(text: str) -> Any:
+    """Generate context for the entire document using prompt caching."""
     try:
-        response = await st.session_state.clients['anthropic'].messages.create(
+        response = await st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": "Analyze this document to understand its overall context.",
+                "cache_control": {"type": "ephemeral"}
+            }],
             messages=[{
                 "role": "user",
-                "content": f"Analyze this document to provide a high-level context:\n\n{text[:2000]}"
+                "content": [{"type": "text", "text": text[:2000]}]
             }]
         )
-        return response.content[0].text
+        return response
     except Exception as e:
         logger.error(f"Error generating document context: {str(e)}")
         raise
@@ -257,19 +262,31 @@ async def generate_document_context(text: str) -> str:
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
 )
-async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
-    """Generate context for a chunk using the document context."""
+async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
+    """Generate context for a chunk using the cached document context."""
     try:
-        response = await st.session_state.clients['anthropic'].messages.create(
+        response = await st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
+            system=[{
+                "type": "text",
+                "text": DEFAULT_CONTEXT_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }],
             messages=[{
                 "role": "user",
-                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nDocument context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
+                    }
+                ]
             }]
         )
+        
         st.session_state.processing_metrics['stages']['context']['success'] += 1
         return response.content[0].text
+        
     except Exception as e:
         logger.error(f"Error generating chunk context: {str(e)}")
         st.session_state.processing_metrics['stages']['context']['failed'] += 1
@@ -365,22 +382,22 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with proper context generation."""
+    """Process chunks asynchronously with proper prompt caching."""
     try:
         processed_chunks = []
         st.session_state.processing_metrics['total_chunks'] += len(chunks)
         
-        # Generate document-level context first
-        doc_context = await generate_document_context(full_document)
+        # Generate and cache document-level context
+        doc_context_response = await generate_document_context(full_document)
         
         # Process chunks in batches
         batch_size = 5
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i:i + batch_size]
             
-            # Generate contexts for batch
+            # Generate contexts for batch using cached document context
             context_tasks = [
-                generate_chunk_context(chunk['text'], doc_context)
+                generate_chunk_context(chunk['text'], doc_context_response)
                 for chunk in batch
             ]
             contexts = await asyncio.gather(*context_tasks, return_exceptions=True)
@@ -398,6 +415,7 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                         model=DEFAULT_EMBEDDING_MODEL
                     )
                     dense_embedding = embedding_result.embeddings[0]
+                    st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
                     
                     # Upsert to Qdrant
                     success = st.session_state.clients['qdrant'].upsert_chunk(
@@ -415,9 +433,11 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                             'embedding': dense_embedding
                         })
                         st.session_state.processing_metrics['processed_chunks'] += 1
+                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
                         
                 except Exception as e:
                     logger.error(f"Error processing chunk: {str(e)}")
+                    st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
                     continue
                     
         return processed_chunks
