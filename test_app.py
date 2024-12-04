@@ -578,6 +578,52 @@ def parse_sitemap(url: str) -> List[str]:
         logger.error(f"Error parsing sitemap: {str(e)}")
         raise
 
+async def process_url(url: str) -> Optional[Dict[str, Any]]:
+    """Process a single URL and return chunks and metadata"""
+    try:
+        # Download PDF
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
+        
+        # Parse PDF with specific options
+        parser = LlamaParse(
+            api_key=st.secrets["LLAMAPARSE_API_KEY"],
+            result_type="markdown",
+            verbose=True,
+            num_workers=4,
+            language="en"
+        )
+        
+        # Load and parse document
+        docs = await parser.aload_data(temp_path)
+        
+        # Access text directly as property
+        full_text = "\n\n".join(doc.text for doc in docs)
+        
+        if not full_text:
+            raise ValueError("No text content found in document")
+        
+        # Extract metadata using QdrantAdapter
+        metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
+        chunks = create_semantic_chunks(full_text)
+        
+        return {
+            "chunks": chunks,
+            "metadata": metadata,
+            "text": full_text
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing URL {url}: {str(e)}")
+        raise
+    finally:
+        if 'temp_path' in locals():
+            os.unlink(temp_path)
+
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
