@@ -483,84 +483,79 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
+    """Process chunks asynchronously with context and embeddings."""
     try:
         processed_chunks = []
         
-        # Batch process embeddings
-        chunk_texts = [chunk['text'] for chunk in chunks]
-        try:
-            # Generate dense embeddings using correct method
-            dense_embeddings = st.session_state.clients['embed_model'].get_text_embedding_batch(
-                chunk_texts
-            )
-            st.session_state.processing_metrics['stages']['dense_vectors']['success'] += len(chunk_texts)
-        except Exception as e:
-            logger.error(f"Error generating dense embeddings: {str(e)}")
-            st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += len(chunk_texts)
-            raise
-
-        # Process each chunk with its corresponding embedding
-        for i, (chunk, dense_embedding) in enumerate(zip(chunks, dense_embeddings)):
+        # Generate document-level context first
+        doc_context = await generate_chunk_context(full_document[:2000], "")
+        
+        # Process chunks in batches
+        batch_size = 5
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            
+            # Generate contexts for batch
+            contexts = await asyncio.gather(*[
+                generate_chunk_context(chunk['text'], doc_context)
+                for chunk in batch
+            ])
+            
+            # Generate embeddings for batch
             try:
-                # Generate context for chunk
-                chunk_context = await generate_chunk_context(chunk['text'], metadata['doc_context'])
-                
-                if not chunk_context:
-                    logger.error(f"Failed to generate context for chunk {i}")
-                    continue
-
-                # Upsert to Qdrant with both dense and sparse vectors
+                texts = [chunk['text'] for chunk in batch]
+                embeddings = st.session_state.clients['embed_model'].embed(
+                    texts,
+                    model=DEFAULT_EMBEDDING_MODEL
+                )
+                st.session_state.processing_metrics['stages']['dense_vectors']['success'] += len(batch)
+            except Exception as e:
+                logger.error(f"Error generating embeddings: {str(e)}")
+                st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += len(batch)
+                continue
+            
+            # Process each chunk in the batch
+            for chunk, context, embedding in zip(batch, contexts, embeddings):
                 try:
-                    success = st.session_state.clients['qdrant'].upsert(
+                    # Upsert to Qdrant
+                    success = st.session_state.clients['qdrant'].upsert_chunk(
                         chunk_text=chunk['text'],
-                        context_text=chunk_context,
-                        dense_embedding=dense_embedding,
+                        context_text=context,
+                        dense_embedding=embedding,
                         metadata=metadata,
-                        chunk_id=str(i)
+                        chunk_id=str(len(processed_chunks))
                     )
+                    
                     if success:
+                        processed_chunks.append({
+                            'text': chunk['text'],
+                            'context': context,
+                            'embedding': embedding
+                        })
                         st.session_state.processing_metrics['stages']['upserts']['success'] += 1
                         st.session_state.processing_metrics['processed_chunks'] += 1
+                    
                 except Exception as e:
                     logger.error(f"Error upserting chunk: {str(e)}")
                     st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
-                    continue
-                
-                processed_chunks.append({
-                    'text': chunk['text'],
-                    'context': chunk_context,
-                    'embedding': dense_embedding
-                })
-                
-            except Exception as e:
-                logger.error(f"Error processing chunk {i}: {str(e)}")
-                continue
-        
+                    
         return processed_chunks
         
     except Exception as e:
         logger.error(f"Error in process_chunks_async: {str(e)}")
         raise
 
+@sleep_and_retry
+@limits(calls=CALLS_PER_MINUTE['anthropic'], period=60)
 async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
     """Generate context for a chunk using the cached document context."""
     try:
-        response = st.session_state.clients['anthropic'].beta.prompt_caching.messages.create(
+        response = await st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
-            system=[{
-                "type": "text",
-                "text": DEFAULT_CONTEXT_PROMPT,
-                "cache_control": {"type": "ephemeral"}
-            }],
             messages=[{
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"Document context:\n{doc_context_response.content[0].text}\n\nChunk text:\n{chunk_text}"
-                    }
-                ]
+                "content": f"{st.session_state.context_prompt}\n\nDocument context:\n{doc_context_response}\n\nChunk text:\n{chunk_text}"
             }]
         )
         
@@ -613,7 +608,7 @@ async def generate_context(text: str, anthropic_client) -> Optional[str]:
         return None
 
 async def parse_document(url: str) -> Optional[Dict[str, Any]]:
-    """Parse a document from a given URL using LlamaParse with FAST mode."""
+    """Parse a document from a given URL using LlamaParse."""
     try:
         # Download the document
         response = requests.get(url)
@@ -638,14 +633,13 @@ async def parse_document(url: str) -> Optional[Dict[str, Any]]:
         )
 
         try:
-            # Use asynchronous parsing for better performance
+            # Use asynchronous parsing
             document = await parser.aload_data(temp_path)
             
             if not document:
                 raise ValueError("No text extracted from document")
 
             # Extract text from the document
-            # LlamaParse returns a list of Document objects
             text = "\n\n".join([doc.text for doc in document])
             
             return {
