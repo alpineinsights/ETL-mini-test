@@ -3,8 +3,8 @@ anthropic==0.40.0
 voyageai==0.2.4
 llama-parse==0.5.12
 qdrant-client>=1.12.1
-llama-index-core>=0.10.0
-llama-index-embeddings-voyageai>=0.2.1
+llama-index-core==0.12.2
+llama-index-embeddings-voyageai==0.12.2
 scikit-learn>=1.4.0
 numpy>=1.24.0
 tenacity>=8.2.0
