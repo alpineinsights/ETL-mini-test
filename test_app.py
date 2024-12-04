@@ -31,6 +31,7 @@ from ratelimit import limits, sleep_and_retry
 import sentry_sdk
 from prometheus_client import Counter, Histogram
 import nest_asyncio
+import pandas as pd
 nest_asyncio.apply()
 
 # Add the current directory to Python path
@@ -343,40 +344,45 @@ def save_processed_urls(urls: set) -> None:
         logger.error(f"Error saving processed URLs: {str(e)}")
 
 def display_metrics():
-    """Display current processing metrics"""
+    """Display detailed processing metrics."""
+    if 'processing_metrics' not in st.session_state:
+        st.warning("No processing metrics available")
+        return
+
     metrics = st.session_state.processing_metrics
     
-    # Display overall progress
-    if metrics.get('total_docs', 0) > 0:
-        progress = metrics['processed_docs'] / metrics['total_docs']
-        st.progress(progress)
-        st.write(f"Processed {metrics['processed_docs']} of {metrics['total_docs']} documents")
-
-    # Display stage-specific metrics
-    if metrics.get('stages'):
-        st.subheader("Processing Stages")
-        cols = st.columns(4)
+    # Document Processing Progress
+    st.write(f"Processed {metrics['processed_docs']} of {metrics['total_docs']} documents")
+    
+    # Detailed Metrics
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.metric("Documents Processed", metrics['processed_docs'])
+        st.metric("Total Chunks", metrics['total_chunks'])
+        st.metric("Errors", metrics['errors'])
         
-        for idx, (stage, data) in enumerate(metrics['stages'].items()):
-            with cols[idx]:
-                total = data['success'] + data['failed']
-                if total > 0:
-                    success_rate = (data['success'] / total) * 100
-                    st.metric(
-                        f"{stage.title()}",
-                        f"{success_rate:.1f}%",
-                        help=f"Success: {data['success']}, Failed: {data['failed']}"
-                    )
-
-    # Display detailed metrics
+    with col2:
+        st.metric("Total Tokens", metrics.get('total_tokens', 0))
+        st.metric("Chunks Created", metrics['processed_chunks'])
+        
+    # Stage-wise Success/Failure Metrics
+    st.subheader("Processing Stages")
+    stages_df = pd.DataFrame({
+        'Stage': list(metrics['stages'].keys()),
+        'Success': [s['success'] for s in metrics['stages'].values()],
+        'Failed': [s['failed'] for s in metrics['stages'].values()]
+    })
+    st.dataframe(stages_df)
+    
+    # Processing Time
     if metrics.get('start_time'):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Documents Processed", metrics['documents_processed'])
-            st.metric("Chunks Created", metrics['chunks_created'])
-        with col2:
-            st.metric("Total Tokens", metrics['total_tokens'])
-            st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
+        elapsed = datetime.now() - metrics['start_time']
+        st.metric("Processing Time", f"{elapsed.total_seconds():.2f}s")
+
+    # Add any warnings or errors
+    if metrics['errors'] > 0:
+        st.warning(f"Encountered {metrics['errors']} errors during processing")
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
     """Process chunks asynchronously with proper embedding and context generation."""
