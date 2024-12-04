@@ -353,13 +353,19 @@ class QdrantAdapter:
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata from document text using Anthropic's Claude model."""
         try:
+            # Format the prompt according to Anthropic's requirements
+            formatted_prompt = (
+                f"\n\nHuman: {DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])}"
+                f"\n\nAssistant:"
+            )
+
             response = self.anthropic_client.completions.create(
                 model="claude-2",
                 max_tokens_to_sample=300,
-                prompt=DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
+                prompt=formatted_prompt
             )
 
-            # Parse response and extract metadata
+            # Rest of the metadata extraction logic remains the same
             metadata = {
                 "company": None,
                 "date": None,
@@ -417,10 +423,16 @@ class QdrantAdapter:
     def _situate_context(self, doc: str, chunk: str) -> str:
         """Internal method to generate context."""
         try:
+            # Format the prompt according to Anthropic's requirements
+            formatted_prompt = (
+                f"\n\nHuman: {CHUNK_CONTEXT_PROMPT.format(chunk_content=chunk)}"
+                f"\n\nAssistant:"
+            )
+
             response = self.anthropic_client.completions.create(
                 model="claude-2",
                 max_tokens_to_sample=300,
-                prompt=CHUNK_CONTEXT_PROMPT.format(chunk_content=chunk)
+                prompt=formatted_prompt
             )
             return response.completion.strip()
         except Exception as e:
