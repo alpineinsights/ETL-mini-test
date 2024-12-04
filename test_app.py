@@ -153,39 +153,49 @@ def validate_environment():
         st.error(f"Missing required environment variables: {', '.join(missing)}")
         st.stop()
 
-def initialize_clients():
-    """Initialize all necessary clients."""
+def initialize_clients() -> bool:
+    """Initialize all required clients"""
     try:
-        # Initialize Qdrant client
-        qdrant_client = initialize_qdrant()
-        if not qdrant_client:
-            raise ValueError("Failed to initialize Qdrant client")
-
-        # Initialize VoyageAI embedding model
-        embed_model = VoyageEmbedding(
-            model_name=DEFAULT_EMBEDDING_MODEL,
-            voyage_api_key=st.secrets["VOYAGE_API_KEY"]
-        )
-
-        # Create QdrantAdapter instance
-        qdrant_adapter = QdrantAdapter(
-            client=qdrant_client,
-            embed_model=embed_model,
-            collection_name="documents",
-            model=DEFAULT_EMBEDDING_MODEL
-        )
-
-        # Store in session state
-        st.session_state.clients = {
-            'qdrant_adapter': qdrant_adapter,
-            'embed_model': embed_model,
-            'qdrant_client': qdrant_client
-        }
-
+        if 'clients' not in st.session_state:
+            # Initialize Anthropic client
+            anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+            
+            # Initialize QdrantAdapter directly with URL and API key
+            qdrant_adapter = QdrantAdapter(
+                url=st.secrets["QDRANT_URL"],
+                api_key=st.secrets["QDRANT_API_KEY"],
+                collection_name="documents",
+                embedding_model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=anthropic_client
+            )
+            
+            # Initialize Voyage client
+            voyage_client = voyageai.Client(api_key=st.secrets["VOYAGE_API_KEY"])
+            
+            # Store in session state
+            st.session_state.clients = {
+                'qdrant': qdrant_adapter,
+                'anthropic': anthropic_client,
+                'embed_model': voyage_client
+            }
+        
+        # Validate clients
+        if not st.session_state.clients['qdrant']:
+            st.error("Failed to initialize Qdrant client")
+            return False
+            
+        if not st.session_state.clients['anthropic']:
+            st.error("Failed to initialize Anthropic client")
+            return False
+            
+        if not st.session_state.clients['embed_model']:
+            st.error("Failed to initialize Voyage client")
+            return False
+            
         return True
-
+        
     except Exception as e:
-        st.error(f"Failed to initialize clients: {str(e)}")
+        st.error(f"Error initializing clients: {str(e)}")
         return False
 
 def validate_clients():
