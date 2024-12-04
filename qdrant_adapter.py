@@ -107,6 +107,13 @@ class QdrantAdapter:
         self.model = model
         self.anthropic_client = None  # Initialize if needed
         
+        # Set dimensions based on the model
+        if model not in VECTOR_DIMENSIONS:
+            raise ValueError(f"Unsupported model: {model}. Must be one of {list(VECTOR_DIMENSIONS.keys())}")
+        
+        self.dense_dim = VECTOR_DIMENSIONS[model]
+        self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
+        
         # Verify the client connection
         try:
             self.client.get_collections()
