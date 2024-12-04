@@ -156,73 +156,74 @@ def validate_environment():
 def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
-        if 'clients' not in st.session_state:
-            logger.info("Starting client initialization...")
+        # Clear existing clients if any
+        cleanup_clients()
+        
+        # Initialize session state first
+        initialize_session_state()
+        
+        logger.info("Starting client initialization...")
+        
+        # 1. Initialize base Qdrant client using init_utils
+        logger.info("Initializing Qdrant client...")
+        qdrant_client = initialize_qdrant()  # Use the function from init_utils
+        
+        if not qdrant_client:
+            logger.error("Failed to initialize Qdrant client")
+            return False
             
-            # 1. Initialize base Qdrant client using init_utils
-            logger.info("Initializing Qdrant client...")
-            qdrant_client = get_qdrant_client(
-                url=st.secrets["QDRANT_URL"],
-                api_key=st.secrets["QDRANT_API_KEY"],
-                timeout=60
+        # Test the connection explicitly
+        try:
+            collections = qdrant_client.get_collections()
+            logger.info("Successfully connected to Qdrant")
+        except Exception as e:
+            logger.error(f"Failed to connect to Qdrant: {str(e)}")
+            return False
+        
+        # 2. Initialize other clients
+        try:
+            embed_model = VoyageEmbedding(
+                model_name=DEFAULT_EMBEDDING_MODEL,
+                voyage_api_key=st.secrets["VOYAGE_API_KEY"]
             )
             
-            if qdrant_client is None:
-                logger.error("Failed to initialize Qdrant client")
-                return False
-                
-            # Test the connection explicitly
-            try:
-                collections = qdrant_client.get_collections()
-                logger.info("Successfully connected to Qdrant")
-            except Exception as e:
-                logger.error(f"Failed to connect to Qdrant: {str(e)}")
-                return False
-            
-            # 2. Initialize other clients
-            try:
-                embed_model = VoyageEmbedding(
-                    model_name=DEFAULT_EMBEDDING_MODEL,
-                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
-                )
-                
-                anthropic_client = anthropic.Anthropic(
-                    api_key=st.secrets["ANTHROPIC_API_KEY"]
-                )
-            except Exception as e:
-                logger.error(f"Failed to initialize embedding or Anthropic client: {str(e)}")
-                return False
-            
-            # 3. Initialize QdrantAdapter
-            try:
-                qdrant_adapter = QdrantAdapter(
-                    client=qdrant_client,
-                    embed_model=embed_model,
-                    collection_name="documents",
-                    model=DEFAULT_EMBEDDING_MODEL,
-                    anthropic_client=anthropic_client
-                )
-                logger.info("QdrantAdapter initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
-                return False
-            
-            # Store all clients in session state
-            st.session_state.clients = {
-                'qdrant': qdrant_client,
-                'qdrant_adapter': qdrant_adapter,
-                'embed_model': embed_model,
-                'anthropic': anthropic_client
-            }
-            
-            logger.info("All clients initialized successfully")
+            anthropic_client = anthropic.Anthropic(
+                api_key=st.secrets["ANTHROPIC_API_KEY"]
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding or Anthropic client: {str(e)}")
+            return False
+        
+        # 3. Initialize QdrantAdapter
+        try:
+            qdrant_adapter = QdrantAdapter(
+                client=qdrant_client,
+                embed_model=embed_model,
+                collection_name=st.session_state.collection_name,  # Use from session state
+                model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=anthropic_client
+            )
+            logger.info("QdrantAdapter initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            return False
+        
+        # Store all clients in session state
+        st.session_state.clients = {
+            'qdrant': qdrant_client,
+            'qdrant_adapter': qdrant_adapter,
+            'embed_model': embed_model,
+            'anthropic': anthropic_client
+        }
+        
+        logger.info("All clients initialized successfully")
         
         # Validate all clients are present and valid
         return validate_clients()
         
     except Exception as e:
         logger.error(f"Error initializing clients: {str(e)}")
-        st.error(f"Error initializing clients: {str(e)}")
+        cleanup_clients()  # Clean up on failure
         return False
 
 def validate_clients() -> bool:
