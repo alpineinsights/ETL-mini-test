@@ -382,64 +382,81 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with proper prompt caching."""
+    """Process chunks asynchronously with caching and progress tracking."""
     try:
         processed_chunks = []
-        st.session_state.processing_metrics['total_chunks'] += len(chunks)
+        total_chunks = len(chunks)
         
-        # Generate and cache document-level context
-        doc_context_response = await generate_document_context(full_document)
+        # Update progress display
+        status_text.text(f"Processing {total_chunks} chunks...")
+        chunk_progress = st.progress(0)
         
-        # Process chunks in batches
-        batch_size = 5
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
-            
-            # Generate contexts for batch using cached document context
-            context_tasks = [
-                generate_chunk_context(chunk['text'], doc_context_response)
-                for chunk in batch
-            ]
-            contexts = await asyncio.gather(*context_tasks, return_exceptions=True)
-            
-            # Process each chunk in the batch
-            for chunk, context in zip(batch, contexts):
-                if isinstance(context, Exception):
-                    logger.error(f"Error in context generation: {str(context)}")
-                    continue
-                    
+        # Generate document-level context once
+        try:
+            doc_context = await rate_limited_context(
+                st.session_state.clients['anthropic'].messages.create,
+                model=DEFAULT_LLM_MODEL,
+                max_tokens=300,
+                messages=[{
+                    "role": "user",
+                    "content": f"Document text:\n{full_document[:2000]}"
+                }]
+            )
+            logger.info("Generated document-level context")
+        except Exception as e:
+            logger.error(f"Error generating document context: {str(e)}")
+            raise
+        
+        for i, chunk in enumerate(chunks):
+            try:
+                # Generate chunk context
+                chunk_context = await generate_chunk_context(chunk['text'], doc_context)
+                logger.info(f"Generated context for chunk {i+1}/{total_chunks}")
+                
+                # Generate embedding
                 try:
-                    # Generate embedding
-                    embedding_result = st.session_state.clients['embed_model'].embed(
-                        [chunk['text']], 
+                    embedding_result = await rate_limited_embedding(
+                        st.session_state.clients['embed_model'].embed,
+                        texts=[chunk['text']],
                         model=DEFAULT_EMBEDDING_MODEL
                     )
-                    dense_embedding = embedding_result.embeddings[0]
+                    dense_embedding = embedding_result[0]  # Access first embedding
                     st.session_state.processing_metrics['stages']['dense_vectors']['success'] += 1
-                    
-                    # Upsert to Qdrant
+                    logger.info(f"Generated embedding for chunk {i+1}/{total_chunks}")
+                except Exception as e:
+                    logger.error(f"Error generating embedding: {str(e)}")
+                    st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += 1
+                    continue
+                
+                # Upsert to Qdrant
+                try:
                     success = st.session_state.clients['qdrant'].upsert_chunk(
                         chunk_text=chunk['text'],
-                        context_text=context,
+                        context_text=chunk_context,
                         dense_embedding=dense_embedding,
                         metadata=metadata,
-                        chunk_id=str(len(processed_chunks))
+                        chunk_id=str(i)
                     )
-                    
                     if success:
+                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
+                        st.session_state.processing_metrics['processed_chunks'] += 1
                         processed_chunks.append({
                             'text': chunk['text'],
-                            'context': context,
+                            'context': chunk_context,
                             'embedding': dense_embedding
                         })
-                        st.session_state.processing_metrics['processed_chunks'] += 1
-                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
-                        
                 except Exception as e:
-                    logger.error(f"Error processing chunk: {str(e)}")
+                    logger.error(f"Error upserting chunk: {str(e)}")
                     st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
                     continue
-                    
+                
+                # Update progress
+                chunk_progress.progress((i + 1) / total_chunks)
+                
+            except Exception as e:
+                logger.error(f"Error processing chunk {i}: {str(e)}")
+                continue
+        
         return processed_chunks
         
     except Exception as e:
