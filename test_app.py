@@ -155,7 +155,8 @@ def validate_environment():
         "ANTHROPIC_API_KEY",
         "VOYAGE_API_KEY",
         "QDRANT_URL",
-        "QDRANT_API_KEY"
+        "QDRANT_API_KEY",
+        "LLAMAPARSE_API_KEY"
     ]
     missing = [var for var in required_vars if not st.secrets.get(var)]
     if missing:
@@ -610,6 +611,11 @@ async def generate_context(text: str, anthropic_client) -> Optional[str]:
 async def parse_document(url: str) -> Optional[Dict[str, Any]]:
     """Parse a document from a given URL using LlamaParse."""
     try:
+        # Ensure API key is available
+        api_key = st.secrets.get("LLAMAPARSE_API_KEY")
+        if not api_key:
+            raise ValueError("LLAMAPARSE_API_KEY not found in secrets")
+
         # Download the document
         response = requests.get(url)
         response.raise_for_status()
@@ -619,13 +625,13 @@ async def parse_document(url: str) -> Optional[Dict[str, Any]]:
             temp_file.write(response.content)
             temp_path = temp_file.name
 
-        # Initialize LlamaParse with optimized settings
+        # Initialize LlamaParse with explicit API key
         parser = LlamaParse(
-            api_key=st.secrets.get("LLAMA_CLOUD_API_KEY"),
-            result_type="text",      # Use text for better chunking compatibility
-            num_workers=8,           # Increased workers for better performance
-            verbose=False,           # Disable verbose output
-            mode="FAST",            # Use FAST mode for quicker processing
+            api_key=api_key,
+            result_type="text",
+            num_workers=8,
+            verbose=False,
+            mode="FAST",
             parsing_instruction=(
                 "this is a financial document. In case the detected language is not english, "
                 "translate it to english"
