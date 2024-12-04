@@ -327,7 +327,7 @@ async def process_url(url: str) -> Optional[Dict]:
     """Process a single URL with context and embeddings."""
     try:
         # Parse document
-        doc = parse_document(url)
+        doc = await parse_document(url)
         if not doc:
             raise ValueError(f"Failed to parse document: {url}")
 
@@ -483,7 +483,6 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with context and embeddings."""
     try:
         processed_chunks = []
         
@@ -612,6 +611,65 @@ async def generate_context(text: str, anthropic_client) -> Optional[str]:
     except Exception as e:
         st.error(f"Error generating context: {str(e)}")
         return None
+
+async def parse_document(url: str) -> Optional[Dict[str, Any]]:
+    """Parse a document from a given URL using LlamaParse with FAST mode."""
+    try:
+        # Download the document
+        response = requests.get(url)
+        response.raise_for_status()
+
+        # Save content to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file.write(response.content)
+            temp_path = temp_file.name
+
+        # Initialize LlamaParse with optimized settings
+        parser = LlamaParse(
+            api_key=st.secrets.get("LLAMA_CLOUD_API_KEY"),
+            result_type="text",      # Use text for better chunking compatibility
+            num_workers=8,           # Increased workers for better performance
+            verbose=False,           # Disable verbose output
+            mode="FAST",            # Use FAST mode for quicker processing
+            parsing_instruction=(
+                "this is a financial document. In case the detected language is not english, "
+                "translate it to english"
+            )
+        )
+
+        try:
+            # Use asynchronous parsing for better performance
+            document = await parser.aload_data(temp_path)
+            
+            if not document:
+                raise ValueError("No text extracted from document")
+
+            # Extract text from the document
+            # LlamaParse returns a list of Document objects
+            text = "\n\n".join([doc.text for doc in document])
+            
+            return {
+                'text': text,
+                'title': url.split('/')[-1],
+                'source': url,
+                'date_processed': datetime.now().isoformat()
+            }
+
+        except Exception as e:
+            logger.error(f"LlamaParse extraction error: {str(e)}")
+            raise
+
+    except Exception as e:
+        logger.error(f"Error parsing document from {url}: {str(e)}")
+        return None
+
+    finally:
+        # Clean up temporary file
+        if 'temp_path' in locals():
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
 
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
