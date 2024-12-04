@@ -366,8 +366,8 @@ async def process_urls_async(urls: List[str]):
                     st.session_state.processing_metrics['errors'] += 1
                     continue
                 
-                # Process the document
-                success = await st.session_state.clients['qdrant'].process_document(
+                # Process the document using qdrant_adapter instead of qdrant client
+                success = await st.session_state.clients['qdrant_adapter'].process_document(
                     doc_text=doc_text,
                     url=url,
                     chunk_size=st.session_state.chunk_size,
