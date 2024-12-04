@@ -18,6 +18,8 @@ import time
 from llama_index.core.node_parser import SentenceSplitter
 from urllib.parse import unquote
 import json
+from anthropic import Client
+from llama_index.embeddings.base import EmbeddingModel
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -89,55 +91,84 @@ class QdrantAdapter:
     {doc_content}
     """
 
-    def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
-        """
-        Initialize Qdrant client with logging.
-
-        Args:
-            url: Qdrant server URL
-            api_key: API key for authentication
-            collection_name: Name of the collection to use
-            embedding_model: Name of the embedding model to use
-            anthropic_client: Initialized Anthropic client for context generation
-        """
-        logger.info(f"Initializing QdrantAdapter with model: {embedding_model}")
+    def __init__(self, model: str, qdrant_client: QdrantClient, 
+                 llm_client: Client = None,
+                 embed_model: EmbeddingModel = None):
+        """Initialize QdrantAdapter with required clients and models."""
+        self.model = model
+        self.client = qdrant_client
+        self.llm_client = llm_client
+        self.embed_model = embed_model
+        
+        # Initialize TF-IDF vectorizer
+        self.vectorizer = TfidfVectorizer(
+            lowercase=True,
+            strip_accents='unicode'
+        )
+        
+        logger.info(f"Initializing QdrantAdapter with model: {model}")
+        
         try:
+            # Test connection
             start_time = time.time()
-            self.client = QdrantClient(
-                url=url,
-                api_key=api_key,
-                timeout=60,
-                prefer_grpc=False  # Force HTTP protocol if gRPC isn't supported
-            )
-            logger.info(f"Connected to Qdrant at {url} in {time.time() - start_time:.2f}s")
+            self.client.get_collection(COLLECTION_NAME)
+            connection_time = time.time() - start_time
+            logger.info(f"Connected to Qdrant at {self.client.host} in {connection_time:.2f}s")
             
-            self.collection_name = collection_name
-            self.embedding_model = embedding_model
-            self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
-            self.sparse_dim = VECTOR_DIMENSIONS['sparse']
-            self.anthropic_client = anthropic_client  # Store the Anthropic client
-
-            # Initialize TF-IDF vectorizer
-            self.vectorizer = TfidfVectorizer(
-                max_features=self.sparse_dim,
-                stop_words='english'
-            )
-
-            # Fit vectorizer on a sample text to initialize vocabulary
-            default_text = [
-                "company financial report earnings revenue profit loss quarter year fiscal",
-                "business market growth strategy development product service customer sales"
-            ]
-
-            self.vectorizer.fit(default_text)
-            logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
-
-            # Ensure the collection exists
-            self._ensure_collection_exists()
-            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
-
+            # Initialize vectorizer vocabulary
+            self._init_vectorizer()
+            
+            logger.info("Successfully initialized QdrantAdapter with {self.model}")
+            
         except Exception as e:
-            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}", exc_info=True)
+            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            raise
+
+    async def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
+        """Process a document with detailed logging and proper error handling."""
+        try:
+            logger.info(f"Starting document processing for {url}")
+            
+            # Extract metadata
+            metadata = self.extract_metadata(doc_text, url)
+            logger.info(f"Metadata extracted successfully for {url}")
+            
+            # Split into chunks
+            logger.info(f"Splitting text into chunks with size {chunk_size}")
+            chunks = self._split_text(
+                text=doc_text,
+                metadata=metadata,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            logger.info(f"Document split into {len(chunks)} chunks")
+            
+            # Process each chunk
+            for chunk in chunks:
+                try:
+                    # Generate dense embedding
+                    dense_vector = await self.embed_model.aembed_query(chunk['text'])
+                    
+                    # Generate sparse embedding
+                    sparse_vector = self._generate_sparse_vector(chunk['text'])
+                    
+                    # Upsert to Qdrant
+                    await self.upsert_chunk(
+                        chunk_text=chunk['text'],
+                        dense_embedding=dense_vector,
+                        sparse_embedding=sparse_vector,
+                        metadata=metadata,
+                        chunk_id=chunk['chunk_id']
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error processing chunk: {str(e)}")
+                    continue
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error processing document {url}: {str(e)}")
             raise
 
     def _ensure_collection_exists(self):
@@ -451,70 +482,6 @@ class QdrantAdapter:
             logger.error(f"Error generating context: {str(e)}")
             raise
 
-    def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
-        """Process a document with detailed logging and proper error handling."""
-        try:
-            logger.info(f"Starting document processing for {url}")
-            
-            # Extract metadata
-            metadata = self.extract_metadata(doc_text, url)
-            logger.info(f"Metadata extracted successfully for {url}")
-            
-            # Split into chunks - pass both chunk_size and chunk_overlap
-            chunks = self._split_text(
-                text=doc_text,
-                metadata=metadata,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
-            )
-            logger.info(f"Document split into {len(chunks)} chunks")
-            
-            # Process each chunk
-            for chunk in chunks:
-                try:
-                    # Generate dense embedding
-                    dense_vector = self.embed_model.embed(texts=[chunk['text']])[0]
-                    
-                    # Generate sparse embedding
-                    sparse_vector = self._generate_sparse_vector(chunk['text'])
-                    
-                    # Upsert to Qdrant
-                    self.upsert_chunk(
-                        chunk_text=chunk['text'],
-                        dense_embedding=dense_vector,
-                        sparse_embedding=sparse_vector,
-                        metadata=metadata,
-                        chunk_id=chunk['chunk_id']
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error processing chunk: {str(e)}")
-                    continue
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error processing document {url}: {str(e)}")
-            raise
-
-    def _create_point(self, id: str, dense_vector: List[float], sparse_vector: Dict[str, List[int]], payload: Dict) -> models.PointStruct:
-        """Create a point for Qdrant with logging."""
-        try:
-            logger.info(f"Creating point {id}")
-            point = models.PointStruct(
-                id=id,
-                vector={
-                    "dense": dense_vector,
-                    "sparse": sparse_vector
-                },
-                payload=payload
-            )
-            logger.info(f"Successfully created point {id}")
-            return point
-        except Exception as e:
-            logger.error(f"Failed to create point {id}: {str(e)}")
-            raise
-
     def _split_text(self, text: str, metadata: Dict[str, Any], chunk_size: int = 500, chunk_overlap: int = 50) -> List[Dict[str, Any]]:
         """Split text into chunks with metadata."""
         try:
@@ -539,30 +506,6 @@ class QdrantAdapter:
             
         except Exception as e:
             logger.error(f"Error splitting text: {str(e)}")
-            raise
-
-    def _create_point_from_chunk(self, chunk: str, context: str, metadata: Dict) -> models.PointStruct:
-        """Create a point for Qdrant from a chunk with logging."""
-        try:
-            logger.info(f"Creating point from chunk {chunk}")
-            dense_vector = self.embed_model.get_text_embedding(chunk)
-            sparse_vector = self.compute_sparse_embedding(chunk)
-            point = models.PointStruct(
-                id=f"{metadata['url']}_{i}",
-                vector={
-                    "dense": dense_vector,
-                    "sparse": sparse_vector
-                },
-                payload={
-                    "chunk_text": chunk,
-                    "context": context,
-                    **metadata
-                }
-            )
-            logger.info(f"Successfully created point from chunk {chunk}")
-            return point
-        except Exception as e:
-            logger.error(f"Failed to create point from chunk {chunk}: {str(e)}")
             raise
 
     def _extract_metadata_from_filename(self, url: str) -> Dict[str, str]:
