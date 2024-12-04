@@ -156,23 +156,30 @@ def validate_environment():
 def initialize_clients():
     """Initialize all necessary clients."""
     try:
-        # Initialize Qdrant client first
+        # Initialize Qdrant client
         qdrant_client = initialize_qdrant()
         if not qdrant_client:
             raise ValueError("Failed to initialize Qdrant client")
 
-        # Initialize VoyageAI embedding model with correct parameters
+        # Initialize VoyageAI embedding model
         embed_model = VoyageEmbedding(
-            model_name=DEFAULT_EMBEDDING_MODEL,
+            model_name="voyage-finance-2",  # or your preferred model
             voyage_api_key=st.secrets["VOYAGE_API_KEY"]
         )
 
-        return {'qdrant': qdrant_client, 'embed_model': embed_model}
+        # Create QdrantAdapter instance
+        adapter = QdrantAdapter(
+            client=qdrant_client,
+            embed_model=embed_model,
+            collection_name="documents",
+            model="voyage-finance-2"
+        )
+
+        return adapter
 
     except Exception as e:
-        st.error(f"Error initializing clients: {str(e)}")
-        logger.error(f"Client initialization error: {str(e)}")
-        return False
+        st.error(f"Failed to initialize clients: {str(e)}")
+        raise
 
 def validate_clients():
     """Validate that all required clients are initialized."""
