@@ -1,11 +1,11 @@
 streamlit==1.32.2
 anthropic==0.40.0
-voyageai==0.2.4  # Check for a newer version
-llama-parse==0.5.12  # Verify latest compatible version
-qdrant-client>=1.12.1  # Add this line
+voyageai==0.2.4
+llama-parse==0.5.12
+qdrant-client>=1.12.1
 llama-index-core==0.12.2
 llama-index-embeddings-voyageai==0.12.2
-llama-index-vector-stores-qdrant==0.12.2  # Add this line
+llama-index-vector-stores-qdrant==0.12.2
 scikit-learn>=1.4.0
 numpy>=1.24.0
 tenacity>=8.2.0
