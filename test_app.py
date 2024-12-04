@@ -236,163 +236,44 @@ def count_tokens(text: str) -> int:
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
 )
-def generate_context(chunk_text: str) -> str:
-    """Generate contextual description for a chunk of text using Claude"""
+async def generate_document_context(text: str) -> str:
+    """Generate context for the entire document."""
     try:
-        response = st.session_state.clients['anthropic'].messages.create(
+        response = await st.session_state.clients['anthropic'].messages.create(
             model=DEFAULT_LLM_MODEL,
             max_tokens=300,
             messages=[{
                 "role": "user",
-                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nText to process:\n{chunk_text}"
+                "content": f"Analyze this document to provide a high-level context:\n\n{text[:2000]}"
             }]
         )
         return response.content[0].text
     except Exception as e:
-        logger.error(f"Error generating context: {str(e)}")
+        logger.error(f"Error generating document context: {str(e)}")
+        raise
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(lambda e: not isinstance(e, KeyboardInterrupt))
+)
+async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
+    """Generate context for a chunk using the document context."""
+    try:
+        response = await st.session_state.clients['anthropic'].messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": f"{DEFAULT_CONTEXT_PROMPT}\n\nDocument context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
+            }]
+        )
+        st.session_state.processing_metrics['stages']['context']['success'] += 1
+        return response.content[0].text
+    except Exception as e:
+        logger.error(f"Error generating chunk context: {str(e)}")
         st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
-
-def parse_sitemap(url: str) -> List[str]:
-    """Parse XML sitemap and return list of URLs."""
-    try:
-        logger.info(f"Fetching sitemap from {url}")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        
-        root = ET.fromstring(response.content)
-        urls = []
-        namespaces = [
-            './/{http://www.sitemaps.org/schemas/sitemap/0.9}loc',
-            './/loc'  # Try without namespace
-        ]
-        
-        for namespace in namespaces:
-            urls.extend([unquote(url.text) for url in root.findall(namespace)])
-        
-        if not urls:
-            logger.warning("No URLs found in sitemap")
-        else:
-            logger.info(f"Found {len(urls)} URLs in sitemap")
-            
-        return urls
-            
-    except Exception as e:
-        logger.error(f"Error parsing sitemap: {str(e)}")
-        raise
-
-def create_semantic_chunks(text: str) -> List[Dict[str, Any]]:
-    """Create semantic chunks from text using sentence boundaries."""
-    try:
-        # Split into sentences and combine into chunks
-        sentences = text.split('.')
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        
-        for sentence in sentences:
-            sentence = sentence.strip() + '.'
-            sentence_length = len(sentence.split())
-            
-            if current_length + sentence_length > st.session_state.chunk_size:
-                if current_chunk:  # Save current chunk if it exists
-                    chunk_text = ' '.join(current_chunk)
-                    chunks.append({
-                        'text': chunk_text,
-                        'length': current_length
-                    })
-                current_chunk = [sentence]
-                current_length = sentence_length
-            else:
-                current_chunk.append(sentence)
-                current_length += sentence_length
-        
-        # Add the last chunk if it exists
-        if current_chunk:
-            chunk_text = ' '.join(current_chunk)
-            chunks.append({
-                'text': chunk_text,
-                'length': current_length
-            })
-        
-        # Update metrics
-        st.session_state.processing_metrics['total_chunks'] += len(chunks)
-        
-        return chunks
-        
-    except Exception as e:
-        logger.error(f"Error creating semantic chunks: {str(e)}")
-        raise
-
-async def process_url(url: str) -> Optional[Dict]:
-    """Process a single URL with context and embeddings."""
-    try:
-        # Parse document
-        doc = await parse_document(url)
-        if not doc:
-            raise ValueError(f"Failed to parse document: {url}")
-
-        # Generate document-level context
-        doc_context = await generate_context(doc['text'], st.session_state.clients['anthropic'])
-        if not doc_context:
-            raise ValueError(f"Failed to generate document context for {url}")
-
-        # Create chunks
-        chunks = create_chunks(doc['text'])
-        if not chunks:
-            raise ValueError(f"No chunks created for {url}")
-
-        # Process chunks with context and embeddings
-        metadata = {
-            'url': url,
-            'title': doc.get('title', ''),
-            'doc_context': doc_context,
-            'creation_date': datetime.now().isoformat()
-        }
-
-        processed_chunks = await process_chunks_async(chunks, metadata, doc['text'])
-        
-        if processed_chunks:
-            return {
-                'chunks': processed_chunks,
-                'metadata': metadata
-            }
-        
-        return None
-
-    except Exception as e:
-        logger.error(f"Error processing URL {url}: {str(e)}")
-        raise
-
-async def process_single_url(url: str, index: int, total: int) -> Optional[Dict[str, Any]]:
-    """Process a single URL asynchronously"""
-    try:
-        # Download and process PDF
-        result = await process_url(url)
-        
-        if result:
-            # Process chunks
-            processed_chunks = await process_chunks_async(
-                result['chunks'],
-                result['metadata'],
-                result['text']
-            )
-            
-            # Update metrics
-            st.session_state.processing_metrics['processed_docs'] += 1
-            st.session_state.processed_urls.add(url)
-            
-            # Update progress
-            progress = (index + 1) / total
-            progress_bar.progress(progress)
-            status_text.text(f"Processed {index + 1}/{total} documents")
-            
-            return processed_chunks
-            
-    except Exception as e:
-        logger.error(f"Error processing URL {url}: {str(e)}")
-        st.session_state.processing_metrics['errors'] += 1
-        return None
 
 async def process_urls_async(urls: List[str]):
     try:
@@ -484,12 +365,13 @@ def display_metrics():
             st.metric("Embedding Time (s)", round(metrics.get('embedding_time', 0), 2))
 
 async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str, Any], full_document: str) -> List[Dict[str, Any]]:
-    """Process chunks asynchronously with context and embeddings."""
+    """Process chunks asynchronously with proper context generation."""
     try:
         processed_chunks = []
+        st.session_state.processing_metrics['total_chunks'] += len(chunks)
         
         # Generate document-level context first
-        doc_context = await generate_chunk_context(full_document[:2000], "")
+        doc_context = await generate_document_context(full_document)
         
         # Process chunks in batches
         batch_size = 5
@@ -497,32 +379,31 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
             batch = chunks[i:i + batch_size]
             
             # Generate contexts for batch
-            contexts = await asyncio.gather(*[
+            context_tasks = [
                 generate_chunk_context(chunk['text'], doc_context)
                 for chunk in batch
-            ])
-            
-            # Generate embeddings for batch
-            try:
-                texts = [chunk['text'] for chunk in batch]
-                embeddings = st.session_state.clients['embed_model'].embed(
-                    texts,
-                    model=DEFAULT_EMBEDDING_MODEL
-                )
-                st.session_state.processing_metrics['stages']['dense_vectors']['success'] += len(batch)
-            except Exception as e:
-                logger.error(f"Error generating embeddings: {str(e)}")
-                st.session_state.processing_metrics['stages']['dense_vectors']['failed'] += len(batch)
-                continue
+            ]
+            contexts = await asyncio.gather(*context_tasks, return_exceptions=True)
             
             # Process each chunk in the batch
-            for chunk, context, embedding in zip(batch, contexts, embeddings):
+            for chunk, context in zip(batch, contexts):
+                if isinstance(context, Exception):
+                    logger.error(f"Error in context generation: {str(context)}")
+                    continue
+                    
                 try:
+                    # Generate embedding
+                    embedding_result = st.session_state.clients['embed_model'].embed(
+                        [chunk['text']], 
+                        model=DEFAULT_EMBEDDING_MODEL
+                    )
+                    dense_embedding = embedding_result.embeddings[0]
+                    
                     # Upsert to Qdrant
                     success = st.session_state.clients['qdrant'].upsert_chunk(
                         chunk_text=chunk['text'],
                         context_text=context,
-                        dense_embedding=embedding,
+                        dense_embedding=dense_embedding,
                         metadata=metadata,
                         chunk_id=str(len(processed_chunks))
                     )
@@ -531,41 +412,18 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
                         processed_chunks.append({
                             'text': chunk['text'],
                             'context': context,
-                            'embedding': embedding
+                            'embedding': dense_embedding
                         })
-                        st.session_state.processing_metrics['stages']['upserts']['success'] += 1
                         st.session_state.processing_metrics['processed_chunks'] += 1
-                    
+                        
                 except Exception as e:
-                    logger.error(f"Error upserting chunk: {str(e)}")
-                    st.session_state.processing_metrics['stages']['upserts']['failed'] += 1
+                    logger.error(f"Error processing chunk: {str(e)}")
+                    continue
                     
         return processed_chunks
         
     except Exception as e:
         logger.error(f"Error in process_chunks_async: {str(e)}")
-        raise
-
-@sleep_and_retry
-@limits(calls=CALLS_PER_MINUTE['anthropic'], period=60)
-async def generate_chunk_context(chunk_text: str, doc_context_response: Any) -> str:
-    """Generate context for a chunk using the cached document context."""
-    try:
-        response = await st.session_state.clients['anthropic'].messages.create(
-            model=DEFAULT_LLM_MODEL,
-            max_tokens=300,
-            messages=[{
-                "role": "user",
-                "content": f"{st.session_state.context_prompt}\n\nDocument context:\n{doc_context_response}\n\nChunk text:\n{chunk_text}"
-            }]
-        )
-        
-        st.session_state.processing_metrics['stages']['context']['success'] += 1
-        return response.content[0].text
-        
-    except Exception as e:
-        logger.error(f"Error generating chunk context: {str(e)}")
-        st.session_state.processing_metrics['stages']['context']['failed'] += 1
         raise
 
 def validate_anthropic_client(client):
