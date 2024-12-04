@@ -95,31 +95,55 @@ class QdrantAdapter:
 
     def __init__(
         self,
-        client: QdrantClient,
-        embed_model: BaseEmbedding,
+        url: str,
+        api_key: str,
         collection_name: str = "documents",
-        model: str = "voyage-finance-2"
+        embedding_model: str = "voyage-finance-2",
+        anthropic_client = None
     ):
         """Initialize QdrantAdapter with necessary clients and configuration."""
-        self.client = client
-        self.embed_model = embed_model
-        self.collection_name = collection_name
-        self.model = model
-        self.anthropic_client = None  # Initialize if needed
-        
-        # Set dimensions based on the model
-        if model not in VECTOR_DIMENSIONS:
-            raise ValueError(f"Unsupported model: {model}. Must be one of {list(VECTOR_DIMENSIONS.keys())}")
-        
-        self.dense_dim = VECTOR_DIMENSIONS[model]
-        self.sparse_dim = VECTOR_DIMENSIONS["sparse"]
-        
-        # Verify the client connection
         try:
-            self.client.get_collections()
-            logger.info("Successfully connected to Qdrant")
+            # Initialize Qdrant client directly
+            self.client = QdrantClient(
+                url=url,
+                api_key=api_key,
+                timeout=60,
+                prefer_grpc=False  # Force HTTP protocol
+            )
+            self.collection_name = collection_name
+            self.embedding_model = embedding_model
+            self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
+            self.sparse_dim = 100  # Reduced dimension for TF-IDF
+            self.anthropic_client = anthropic_client
+            
+            # Initialize TF-IDF vectorizer
+            self.vectorizer = TfidfVectorizer(
+                max_features=self.sparse_dim,
+                stop_words='english'
+            )
+            
+            # Initialize vocabulary with default financial terms
+            default_text = [
+                "company financial report earnings revenue profit loss quarter year fiscal",
+                "business market growth strategy development product service customer sales"
+            ]
+            self.vectorizer.fit(default_text)
+            logger.info(f"Initialized TF-IDF vectorizer with vocabulary size: {len(self.vectorizer.vocabulary_)}")
+            
+            # Check and initialize collection
+            try:
+                info = self.client.get_collection(self.collection_name)
+                logger.info(f"Found existing collection: {self.collection_name}")
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    logger.info(f"Collection {self.collection_name} not found, creating...")
+                    self.create_collection()
+                else:
+                    raise
+            
+            logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
         except Exception as e:
-            logger.error(f"Failed to connect to Qdrant: {str(e)}")
+            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
             raise
 
     async def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
