@@ -15,7 +15,7 @@ import streamlit as st
 from ratelimit import limits, sleep_and_retry
 from pathlib import Path
 import time
-from llama_index import TextSplitter
+from llama_index.core.node_parser import SentenceSplitter
 from urllib.parse import unquote
 
 # Configure logging
@@ -516,10 +516,10 @@ class QdrantAdapter:
             raise
 
     def _split_text(self, text: str, max_chunk_size: int = 500) -> List[str]:
-        """Split text into chunks using LlamaIndex TextSplitter."""
+        """Split text into chunks using SentenceSplitter from LlamaIndex."""
         try:
             logger.info(f"Splitting text into chunks with max size {max_chunk_size}")
-            splitter = TextSplitter(max_chunk_size=max_chunk_size)
+            splitter = SentenceSplitter(max_chunk_size=max_chunk_size)
             chunks = splitter.split(text)
             logger.info(f"Text split into {len(chunks)} chunks")
             return chunks
