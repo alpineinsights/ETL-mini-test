@@ -7,7 +7,7 @@ import streamlit as st
 import anthropic
 import voyageai
 from llama_parse import LlamaParse
-from llama_index_embeddings_voyageai import VoyageEmbedding
+from llama_index.embeddings.voyageai import VoyageEmbedding
 from llama_index.core.embeddings import BaseEmbedding
 import tempfile
 import shutil
