@@ -14,8 +14,14 @@ import uuid
 import streamlit as st
 from ratelimit import limits, sleep_and_retry
 from pathlib import Path
+import time
 
+# Configure logging
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 VECTOR_DIMENSIONS = {
     "voyage-finance-2": 1024,
@@ -74,7 +80,7 @@ class QdrantAdapter:
     
     def __init__(self, url: str, api_key: str, collection_name: str = "documents", embedding_model: str = "voyage-finance-2", anthropic_client = None):
         """
-        Initialize Qdrant client.
+        Initialize Qdrant client with logging.
 
         Args:
             url: Qdrant server URL
@@ -83,13 +89,17 @@ class QdrantAdapter:
             embedding_model: Name of the embedding model to use
             anthropic_client: Initialized Anthropic client for context generation
         """
+        logger.info(f"Initializing QdrantAdapter with model: {embedding_model}")
         try:
+            start_time = time.time()
             self.client = QdrantClient(
                 url=url,
                 api_key=api_key,
                 timeout=60,
                 prefer_grpc=False  # Force HTTP protocol if gRPC isn't supported
             )
+            logger.info(f"Connected to Qdrant at {url} in {time.time() - start_time:.2f}s")
+            
             self.collection_name = collection_name
             self.embedding_model = embedding_model
             self.dense_dim = VECTOR_DIMENSIONS[embedding_model]
@@ -116,7 +126,7 @@ class QdrantAdapter:
             logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
 
         except Exception as e:
-            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
+            logger.error(f"Failed to initialize QdrantAdapter: {str(e)}", exc_info=True)
             raise
 
     def _ensure_collection_exists(self):
@@ -176,26 +186,30 @@ class QdrantAdapter:
         stop=stop_after_attempt(3),
         retry=retry_if_exception(lambda e: not isinstance(e, ValueError))
     )
-    def compute_sparse_embedding(self, text: str) -> List[float]:
-        """Compute sparse embedding using TF-IDF vectorizer."""
+    def compute_sparse_embedding(self, text: str) -> Dict[str, List[int]]:
+        """Compute sparse embedding with logging."""
         try:
-            # Transform text to sparse vector
-            sparse_matrix = self.vectorizer.transform([text])
-
-            # Convert sparse matrix to dense array and pad/truncate to match required dimension
-            dense_array = sparse_matrix.toarray().flatten()
-
-            # Pad with zeros if necessary
-            if len(dense_array) < self.sparse_dim:
-                dense_array = np.pad(dense_array, (0, self.sparse_dim - len(dense_array)))
-            # Truncate if necessary
-            elif len(dense_array) > self.sparse_dim:
-                dense_array = dense_array[:self.sparse_dim]
-
-            return dense_array.tolist()
-
+            start_time = time.time()
+            logger.info("Computing sparse embedding...")
+            
+            if not text:
+                raise ValueError("Input text cannot be empty")
+            
+            # Transform the text
+            sparse_vector = self.vectorizer.transform([text])
+            
+            # Convert to indices and values
+            indices = sparse_vector.indices.tolist()
+            values = sparse_vector.data.tolist()
+            
+            logger.info(f"Generated sparse embedding with {len(indices)} non-zero elements in {time.time() - start_time:.2f}s")
+            
+            return {
+                "indices": indices,
+                "values": values
+            }
         except Exception as e:
-            logger.error(f"Error computing sparse embedding: {str(e)}")
+            logger.error(f"Failed to compute sparse embedding: {str(e)}", exc_info=True)
             raise
 
     @retry(
@@ -360,21 +374,24 @@ class QdrantAdapter:
         retry=retry_if_exception(is_overloaded_error)
     )
     def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
-        """Extract metadata from document text using Anthropic's Claude model."""
+        """Extract metadata with detailed logging."""
+        start_time = time.time()
+        logger.info(f"Extracting metadata for document: {url}")
+        
         try:
-            # Format the prompt according to Anthropic's requirements
             formatted_prompt = (
                 f"\n\nHuman: {DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])}"
                 f"\n\nAssistant:"
             )
 
+            logger.info("Sending request to Anthropic API...")
             response = self.anthropic_client.completions.create(
                 model="claude-2",
                 max_tokens_to_sample=300,
                 prompt=formatted_prompt
             )
+            logger.info(f"Received response from Anthropic in {time.time() - start_time:.2f}s")
 
-            # Rest of the metadata extraction logic remains the same
             metadata = {
                 "company": None,
                 "date": None,
@@ -385,6 +402,9 @@ class QdrantAdapter:
             }
 
             response_text = response.completion
+            logger.debug(f"Raw response: {response_text}")
+
+            # Parse response and update metadata
             for line in response_text.strip().split('\n'):
                 if line.startswith('1.') and 'company' in line.lower():
                     metadata['company'] = line.split(':')[-1].strip()
@@ -393,14 +413,17 @@ class QdrantAdapter:
                 elif line.startswith('3.') and 'fiscal' in line.lower():
                     metadata['fiscal_period'] = line.split(':')[-1].strip()
 
+            logger.info(f"Successfully extracted metadata: {metadata}")
             return metadata
 
         except Exception as e:
-            logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}")
-            # Fall back to filename-based metadata
+            logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}", exc_info=True)
+            logger.info("Falling back to filename-based metadata")
+            
+            # Fallback logic
             filename = Path(url).name
             parts = filename.replace('.pdf', '').split('_')
-            return {
+            metadata = {
                 "company": parts[0] if len(parts) > 0 else "Unknown",
                 "fiscal_period": parts[1] if len(parts) > 1 else None,
                 "date": parts[2] if len(parts) > 2 else None,
@@ -408,6 +431,8 @@ class QdrantAdapter:
                 "file_name": filename,
                 "creation_date": datetime.now().isoformat()
             }
+            logger.info(f"Generated fallback metadata: {metadata}")
+            return metadata
 
     def recover_collection(self) -> bool:
         """Attempt to recover collection if in a bad state."""
