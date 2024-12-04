@@ -526,14 +526,19 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
             
             try:
                 # Use aload_data for async operation
-                documents = await parser.aload_data(temp_path)
+                result = await parser.aload_data(temp_path)
                 
-                # Handle different return types
-                if isinstance(documents, list):
-                    # If multiple documents returned, join their text
-                    return "\n\n".join(doc.text for doc in documents)
-                return documents.text
-                
+                # Handle the result based on LlamaParse's response format
+                if isinstance(result, list):
+                    # If multiple documents returned, concatenate their text
+                    return "\n\n".join(doc.text for doc in result)
+                elif hasattr(result, 'text'):
+                    # Single document case
+                    return result.text
+                else:
+                    # Direct text case
+                    return str(result)
+                    
             finally:
                 # Clean up temp file
                 try:
