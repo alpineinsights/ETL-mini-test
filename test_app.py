@@ -157,45 +157,59 @@ def initialize_clients() -> bool:
     """Initialize all required clients"""
     try:
         if 'clients' not in st.session_state:
+            logger.info("Initializing clients...")
+            
             # Initialize Anthropic client
+            logger.info("Initializing Anthropic client...")
             anthropic_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
             
-            # Initialize Qdrant client first
-            qdrant_client = initialize_qdrant()
-            if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
-            
             # Initialize Voyage embedding model
+            logger.info("Initializing Voyage embedding model...")
             embed_model = VoyageEmbedding(
                 model_name=DEFAULT_EMBEDDING_MODEL,
                 voyage_api_key=st.secrets["VOYAGE_API_KEY"]
             )
             
-            # Create QdrantAdapter instance
+            # Initialize Qdrant client
+            logger.info("Initializing Qdrant client...")
+            qdrant_client = get_qdrant_client(
+                url=st.secrets["QDRANT_URL"],
+                api_key=st.secrets["QDRANT_API_KEY"]
+            )
+            if not qdrant_client:
+                raise ValueError("Failed to initialize Qdrant client")
+            
+            # Initialize QdrantAdapter
+            logger.info("Initializing QdrantAdapter...")
             qdrant_adapter = QdrantAdapter(
                 client=qdrant_client,
                 embed_model=embed_model,
                 collection_name="documents",
-                model=DEFAULT_EMBEDDING_MODEL
+                model=DEFAULT_EMBEDDING_MODEL,
+                anthropic_client=anthropic_client  # Pass the Anthropic client
             )
             
-            # Store in session state
+            # Store all clients in session state
             st.session_state.clients = {
                 'qdrant_adapter': qdrant_adapter,
                 'qdrant': qdrant_client,
                 'anthropic': anthropic_client,
                 'embed_model': embed_model
             }
+            
+            logger.info("All clients initialized successfully")
         
-        # Validate clients with proper error handling
-        for client_name in ['qdrant_adapter', 'qdrant', 'anthropic', 'embed_model']:
+        # Validate all required clients exist and are initialized
+        required_clients = ['qdrant_adapter', 'qdrant', 'anthropic', 'embed_model']
+        for client_name in required_clients:
             if client_name not in st.session_state.clients:
-                st.error(f"Missing {client_name} client")
+                logger.error(f"Missing {client_name} client")
                 return False
             if st.session_state.clients[client_name] is None:
-                st.error(f"Failed to initialize {client_name} client")
+                logger.error(f"{client_name} client is None")
                 return False
         
+        logger.info("Client validation successful")
         return True
         
     except Exception as e:
