@@ -32,6 +32,7 @@ import sentry_sdk
 from prometheus_client import Counter, Histogram
 import nest_asyncio
 import pandas as pd
+import time
 nest_asyncio.apply()
 
 # Add the current directory to Python path
@@ -298,11 +299,8 @@ def initialize_ui_components():
         st.session_state.status_text = st.empty()
 
 async def process_urls_async(urls: List[str]):
-    """Process URLs asynchronously with better error handling and progress tracking."""
+    """Process URLs asynchronously with timeout handling."""
     try:
-        # Initialize UI components
-        initialize_ui_components()
-        
         for i, url in enumerate(urls, 1):
             try:
                 logger.info(f"Processing document {i}/{len(urls)}: {url}")
@@ -312,27 +310,27 @@ async def process_urls_async(urls: List[str]):
                 st.session_state.progress_bar.progress(progress)
                 st.session_state.status_text.text(f"Processing document {i}/{len(urls)}")
                 
-                # Parse document
-                doc_text = await parse_document(url)
+                # Parse document with timeout
+                doc_text = await parse_document(url, timeout=120)  # 2 minute timeout
+                
                 if not doc_text:
                     logger.error(f"Failed to parse document: {url}")
                     st.session_state.processing_metrics['errors'] += 1
                     continue
                 
-                logger.info(f"Starting document processing for {url}")
-                # Process document
-                success = st.session_state.clients['qdrant'].process_document(
+                # Process the document
+                success = await st.session_state.clients['qdrant'].process_document(
                     doc_text=doc_text,
-                    url=url
+                    url=url,
+                    chunk_size=st.session_state.chunk_size,
+                    chunk_overlap=st.session_state.chunk_overlap
                 )
                 
                 if success:
                     st.session_state.processing_metrics['processed_docs'] += 1
-                    logger.info(f"Successfully processed document {i}/{len(urls)}")
                 else:
                     st.session_state.processing_metrics['errors'] += 1
-                    logger.error(f"Failed to process document {i}/{len(urls)}")
-                
+                    
             except Exception as e:
                 logger.error(f"Error processing {url}: {str(e)}")
                 st.session_state.processing_metrics['errors'] += 1
@@ -535,68 +533,48 @@ async def generate_context(text: str, anthropic_client) -> Optional[str]:
         st.error(f"Error generating context: {str(e)}")
         return None
 
-async def parse_document(url: str) -> Optional[Dict[str, Any]]:
-    """Parse a document from a given URL using LlamaParse."""
+async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
+    """Parse document with timeout and better error handling."""
     try:
-        # Ensure API key is available
-        api_key = st.secrets.get("LLAMAPARSE_API_KEY")
-        if not api_key:
-            raise ValueError("LLAMAPARSE_API_KEY not found in secrets")
-
-        # Download the document
-        response = requests.get(url)
-        response.raise_for_status()
-
-        # Save content to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-            temp_file.write(response.content)
-            temp_path = temp_file.name
-
-        # Initialize LlamaParse with explicit API key
+        logger.info(f"Starting to parse document: {url}")
         parser = LlamaParse(
-            api_key=api_key,
-            result_type="text",
-            num_workers=8,
-            verbose=False,
-            mode="FAST",
-            parsing_instruction=(
-                "this is a financial document. In case the detected language is not english, "
-                "translate it to english"
-            )
+            api_key=os.getenv("LLAMA_CLOUD_API_KEY"),
+            result_type="text"  # "markdown" or "text"
         )
-
-        try:
-            # Use asynchronous parsing
-            document = await parser.aload_data(temp_path)
+        
+        # Start time for timeout tracking
+        start_time = time.time()
+        
+        # Upload document
+        job_id = await parser.aupload(url)
+        logger.info(f"Document uploaded, job_id: {job_id}")
+        
+        # Poll for results with timeout
+        while time.time() - start_time < timeout:
+            status = await parser.aget_status(job_id)
             
-            if not document:
-                raise ValueError("No text extracted from document")
-
-            # Extract text from the document
-            text = "\n\n".join([doc.text for doc in document])
+            if status.status == "completed":
+                result = await parser.aget_result(job_id)
+                logger.info(f"Successfully parsed document: {url}")
+                return result
             
-            return {
-                'text': text,
-                'title': url.split('/')[-1],
-                'source': url,
-                'date_processed': datetime.now().isoformat()
-            }
-
-        except Exception as e:
-            logger.error(f"LlamaParse extraction error: {str(e)}")
-            raise
-
-    except Exception as e:
-        logger.error(f"Error parsing document from {url}: {str(e)}")
+            elif status.status == "failed":
+                logger.error(f"Parsing failed for document: {url}")
+                return None
+            
+            # Add more detailed logging
+            logger.info(f"Current status: {status.status}, elapsed time: {int(time.time() - start_time)}s")
+            
+            # Wait before next poll
+            await asyncio.sleep(2)
+        
+        # If we get here, we've timed out
+        logger.error(f"Parsing timed out after {timeout} seconds for document: {url}")
         return None
-
-    finally:
-        # Clean up temporary file
-        if 'temp_path' in locals():
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
+        
+    except Exception as e:
+        logger.error(f"Error parsing document {url}: {str(e)}")
+        return None
 
 # Add this near the top of the file, after the imports and before the UI code
 def parse_sitemap(url: str) -> List[str]:
