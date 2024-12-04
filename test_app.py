@@ -525,14 +525,14 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
             temp_path = temp_file.name
             
             try:
-                # Use load_data for synchronous operation
-                result = parser.load_data(temp_path)
+                # Use aload_data for async operation
+                documents = await parser.aload_data(temp_path)
                 
                 # Handle different return types
-                if isinstance(result, list):
+                if isinstance(documents, list):
                     # If multiple documents returned, join their text
-                    return "\n\n".join(doc.text for doc in result)
-                return result.text
+                    return "\n\n".join(doc.text for doc in documents)
+                return documents.text
                 
             finally:
                 # Clean up temp file
