@@ -472,3 +472,89 @@ class QdrantAdapter:
         except Exception as e:
             logger.error(f"Error generating context: {str(e)}")
             raise
+
+    def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
+        """Process a document with detailed logging."""
+        try:
+            logger.info(f"Starting document processing for {url}")
+            
+            # Extract metadata
+            metadata = self.extract_metadata(doc_text, url)
+            logger.info(f"Metadata extracted successfully for {url}")
+            
+            # Split into chunks
+            chunks = self._split_text(doc_text, chunk_size, chunk_overlap)
+            logger.info(f"Document split into {len(chunks)} chunks")
+            
+            for i, chunk in enumerate(chunks):
+                try:
+                    logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+                    
+                    # Generate context
+                    context = self._situate_context(doc_text, chunk)
+                    logger.info(f"Generated context for chunk {i+1}")
+                    
+                    # Create dense embedding
+                    try:
+                        dense_vector = self.embed_model.get_text_embedding(chunk)
+                        logger.info(f"Created dense embedding for chunk {i+1}")
+                    except Exception as e:
+                        logger.error(f"Failed to create dense embedding for chunk {i+1}: {str(e)}")
+                        raise
+                    
+                    # Create sparse embedding
+                    try:
+                        sparse_vector = self.compute_sparse_embedding(chunk)
+                        logger.info(f"Created sparse embedding for chunk {i+1}")
+                    except Exception as e:
+                        logger.error(f"Failed to create sparse embedding for chunk {i+1}: {str(e)}")
+                        raise
+                    
+                    # Upsert to Qdrant
+                    chunk_id = f"{url}_{i}"
+                    point = self._create_point(
+                        id=chunk_id,
+                        dense_vector=dense_vector,
+                        sparse_vector=sparse_vector,
+                        payload={
+                            "chunk_text": chunk,
+                            "context": context,
+                            **metadata
+                        }
+                    )
+                    
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=[point],
+                        wait=True
+                    )
+                    logger.info(f"Successfully upserted chunk {i+1} to Qdrant")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing chunk {i+1}: {str(e)}")
+                    raise
+                
+            logger.info(f"Successfully processed document: {url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to process document {url}: {str(e)}")
+            raise
+
+    def _create_point(self, id: str, dense_vector: List[float], sparse_vector: Dict[str, List[int]], payload: Dict) -> models.PointStruct:
+        """Create a point for Qdrant with logging."""
+        try:
+            logger.info(f"Creating point {id}")
+            point = models.PointStruct(
+                id=id,
+                vector={
+                    "dense": dense_vector,
+                    "sparse": sparse_vector
+                },
+                payload=payload
+            )
+            logger.info(f"Successfully created point {id}")
+            return point
+        except Exception as e:
+            logger.error(f"Failed to create point {id}: {str(e)}")
+            raise
