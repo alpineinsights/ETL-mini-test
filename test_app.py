@@ -720,6 +720,53 @@ async def process_url(url: str) -> Optional[Dict[str, Any]]:
         if 'temp_path' in locals():
             os.unlink(temp_path)
 
+def fetch_sitemap(sitemap_url: str) -> List[str]:
+    """
+    Fetch and parse sitemap XML to extract URLs.
+    
+    Args:
+        sitemap_url: URL of the sitemap
+        
+    Returns:
+        List of URLs found in the sitemap
+    """
+    try:
+        logger.info(f"Fetching sitemap from {sitemap_url}")
+        
+        # Fetch sitemap
+        response = requests.get(sitemap_url)
+        response.raise_for_status()
+        
+        # Parse XML
+        root = ET.fromstring(response.content)
+        
+        # Extract URLs (handle both standard and namespaced XML)
+        urls = []
+        namespaces = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+        
+        # Try with namespace first
+        locations = root.findall('.//ns:loc', namespaces)
+        
+        # If no locations found, try without namespace
+        if not locations:
+            locations = root.findall('.//loc')
+        
+        # Extract URLs
+        urls = [loc.text for loc in locations]
+        
+        logger.info(f"Found {len(urls)} URLs in sitemap")
+        return urls
+        
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch sitemap: {str(e)}")
+        raise
+    except ET.ParseError as e:
+        logger.error(f"Failed to parse sitemap XML: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error fetching sitemap: {str(e)}")
+        raise
+
 # Must be the first Streamlit command
 st.set_page_config(page_title="Alpine ETL Processing Pipeline", layout="wide")
 
