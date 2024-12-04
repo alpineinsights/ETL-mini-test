@@ -133,6 +133,9 @@ class QdrantAdapter:
             self._ensure_collection_exists()
             logger.info(f"Successfully initialized QdrantAdapter with {embedding_model}")
 
+            # Add the prompt as a class attribute
+            self.DOCUMENT_CONTEXT_PROMPT = DOCUMENT_CONTEXT_PROMPT  # Use the one defined at module level
+
         except Exception as e:
             logger.error(f"Failed to initialize QdrantAdapter: {str(e)}", exc_info=True)
             raise
@@ -457,7 +460,7 @@ class QdrantAdapter:
             metadata = self.extract_metadata(doc_text, url)
             logger.info(f"Metadata extracted successfully for {url}")
             
-            # Split into chunks
+            # Split into chunks - pass only required arguments
             chunks = self._split_text(doc_text, chunk_size, chunk_overlap)
             logger.info(f"Document split into {len(chunks)} chunks")
             
@@ -510,12 +513,15 @@ class QdrantAdapter:
             logger.error(f"Failed to create point {id}: {str(e)}")
             raise
 
-    def _split_text(self, text: str, max_chunk_size: int = 500) -> List[str]:
+    def _split_text(self, text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
         """Split text into chunks using SentenceSplitter from LlamaIndex."""
         try:
-            logger.info(f"Splitting text into chunks with max size {max_chunk_size}")
-            splitter = SentenceSplitter(max_chunk_size=max_chunk_size)
-            chunks = splitter.split(text)
+            logger.info(f"Splitting text into chunks with size {chunk_size} and overlap {chunk_overlap}")
+            splitter = SentenceSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            chunks = splitter.split_text(text)  # Changed from split() to split_text()
             logger.info(f"Text split into {len(chunks)} chunks")
             return chunks
         except Exception as e:
