@@ -167,26 +167,31 @@ def initialize_clients() -> bool:
                 timeout=60
             )
             
-            if not qdrant_client:
-                raise ValueError("Failed to initialize Qdrant client")
-            
-            # Test the connection
+            if qdrant_client is None:
+                logger.error("Failed to initialize Qdrant client")
+                return False
+                
+            # Test the connection explicitly
             try:
-                qdrant_client.get_collections()
+                collections = qdrant_client.get_collections()
                 logger.info("Successfully connected to Qdrant")
             except Exception as e:
                 logger.error(f"Failed to connect to Qdrant: {str(e)}")
-                raise ValueError("Qdrant connection test failed")
+                return False
             
             # 2. Initialize other clients
-            embed_model = VoyageEmbedding(
-                model_name=DEFAULT_EMBEDDING_MODEL,
-                voyage_api_key=st.secrets["VOYAGE_API_KEY"]
-            )
-            
-            anthropic_client = anthropic.Anthropic(
-                api_key=st.secrets["ANTHROPIC_API_KEY"]
-            )
+            try:
+                embed_model = VoyageEmbedding(
+                    model_name=DEFAULT_EMBEDDING_MODEL,
+                    voyage_api_key=st.secrets["VOYAGE_API_KEY"]
+                )
+                
+                anthropic_client = anthropic.Anthropic(
+                    api_key=st.secrets["ANTHROPIC_API_KEY"]
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize embedding or Anthropic client: {str(e)}")
+                return False
             
             # 3. Initialize QdrantAdapter
             try:
@@ -200,7 +205,7 @@ def initialize_clients() -> bool:
                 logger.info("QdrantAdapter initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize QdrantAdapter: {str(e)}")
-                raise
+                return False
             
             # Store all clients in session state
             st.session_state.clients = {
@@ -211,36 +216,48 @@ def initialize_clients() -> bool:
             }
             
             logger.info("All clients initialized successfully")
-            
-        # Validate clients
-        required_clients = ['qdrant', 'qdrant_adapter', 'embed_model', 'anthropic']
-        for client in required_clients:
-            if client not in st.session_state.clients or st.session_state.clients[client] is None:
-                logger.error(f"Missing or invalid {client} client")
-                return False
         
-        return True
+        # Validate all clients are present and valid
+        return validate_clients()
         
     except Exception as e:
         logger.error(f"Error initializing clients: {str(e)}")
         st.error(f"Error initializing clients: {str(e)}")
         return False
 
-def validate_clients():
+def validate_clients() -> bool:
     """Validate that all required clients are initialized."""
-    required_clients = ['qdrant_adapter', 'qdrant', 'anthropic', 'embed_model']
+    required_clients = ['qdrant', 'qdrant_adapter', 'embed_model', 'anthropic']
     
-    if not st.session_state.get('clients'):
+    # Check if clients exist in session state
+    if 'clients' not in st.session_state:
         logger.error("No clients found in session state")
+        st.error("No clients found in session state")
         return False
     
+    # Check each required client
     for client in required_clients:
         if client not in st.session_state.clients:
-            logger.error(f"Missing {client} client")
+            logger.error(f"Missing {client} client in session state")
+            st.error(f"Missing {client} client")
             return False
+            
         if st.session_state.clients[client] is None:
             logger.error(f"{client} client is None")
+            st.error(f"{client} client is invalid")
             return False
+    
+    # Additional validation for Qdrant client
+    try:
+        # Test Qdrant connection
+        st.session_state.clients['qdrant'].get_collections()
+    except Exception as e:
+        logger.error(f"Qdrant client validation failed: {str(e)}")
+        st.error("Qdrant client validation failed")
+        return False
+    
+    logger.info("All clients validated successfully")
+    return True
 
 # Processing Functions
 def count_tokens(text: str) -> int:
@@ -991,3 +1008,14 @@ async def perform_search_with_timeout(query: str, embed_model, qdrant_adapter, t
     except Exception as e:
         logger.error(f"Error in async search with timeout: {str(e)}")
         raise
+
+def cleanup_clients():
+    """Clean up clients on initialization failure"""
+    if 'clients' in st.session_state:
+        for client in st.session_state.clients.values():
+            if hasattr(client, 'close'):
+                try:
+                    client.close()
+                except:
+                    pass
+        del st.session_state.clients
