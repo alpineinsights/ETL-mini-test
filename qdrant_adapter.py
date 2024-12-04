@@ -451,7 +451,7 @@ class QdrantAdapter:
             logger.error(f"Error generating context: {str(e)}")
             raise
 
-    def process_document(self, doc_text: str, url: str, chunk_size: int = 500) -> bool:
+    def process_document(self, doc_text: str, url: str, chunk_size: int = 500, chunk_overlap: int = 50) -> bool:
         """Process a document with detailed logging and proper error handling."""
         try:
             logger.info(f"Starting document processing for {url}")
@@ -460,39 +460,41 @@ class QdrantAdapter:
             metadata = self.extract_metadata(doc_text, url)
             logger.info(f"Metadata extracted successfully for {url}")
             
-            # Split into chunks - pass only required arguments
-            chunks = self._split_text(doc_text, metadata, chunk_size)
+            # Split into chunks - pass both chunk_size and chunk_overlap
+            chunks = self._split_text(
+                text=doc_text,
+                metadata=metadata,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
             logger.info(f"Document split into {len(chunks)} chunks")
             
-            for i, chunk in enumerate(chunks):
+            # Process each chunk
+            for chunk in chunks:
                 try:
-                    logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+                    # Generate dense embedding
+                    dense_vector = self.embed_model.embed(texts=[chunk['text']])[0]
                     
-                    # Generate context
-                    context = self._situate_context(doc_text, chunk['text'])
-                    logger.info(f"Generated context for chunk {i+1}")
-                    
-                    # Create embeddings and point
-                    point = self._create_point_from_chunk(chunk['text'], context, chunk['metadata'])
-                    logger.info(f"Created point for chunk {i+1}")
+                    # Generate sparse embedding
+                    sparse_vector = self._generate_sparse_vector(chunk['text'])
                     
                     # Upsert to Qdrant
-                    self.client.upsert(
-                        collection_name=self.collection_name,
-                        points=[point],
-                        wait=True
+                    self.upsert_chunk(
+                        chunk_text=chunk['text'],
+                        dense_embedding=dense_vector,
+                        sparse_embedding=sparse_vector,
+                        metadata=metadata,
+                        chunk_id=chunk['chunk_id']
                     )
-                    logger.info(f"Successfully upserted chunk {i+1} to Qdrant")
                     
                 except Exception as e:
-                    logger.error(f"Error processing chunk {i+1}: {str(e)}")
-                    raise
+                    logger.error(f"Error processing chunk: {str(e)}")
+                    continue
                 
-            logger.info(f"Successfully processed document: {url}")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to process document {url}: {str(e)}")
+            logger.error(f"Error processing document {url}: {str(e)}")
             raise
 
     def _create_point(self, id: str, dense_vector: List[float], sparse_vector: Dict[str, List[int]], payload: Dict) -> models.PointStruct:
@@ -513,13 +515,13 @@ class QdrantAdapter:
             logger.error(f"Failed to create point {id}: {str(e)}")
             raise
 
-    def _split_text(self, text: str, metadata: Dict[str, Any], chunk_size: int = 500) -> List[Dict[str, Any]]:
+    def _split_text(self, text: str, metadata: Dict[str, Any], chunk_size: int = 500, chunk_overlap: int = 50) -> List[Dict[str, Any]]:
         """Split text into chunks with metadata."""
         try:
             logger.info(f"Splitting text into chunks with size {chunk_size}")
             splitter = SentenceSplitter(
                 chunk_size=chunk_size,
-                chunk_overlap=50  # Fixed overlap
+                chunk_overlap=chunk_overlap
             )
             chunks = splitter.split_text(text)
             
