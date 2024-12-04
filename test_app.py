@@ -163,23 +163,30 @@ def initialize_clients():
 
         # Initialize VoyageAI embedding model
         embed_model = VoyageEmbedding(
-            model_name="voyage-finance-2",  # or your preferred model
+            model_name=DEFAULT_EMBEDDING_MODEL,
             voyage_api_key=st.secrets["VOYAGE_API_KEY"]
         )
 
         # Create QdrantAdapter instance
-        adapter = QdrantAdapter(
+        qdrant_adapter = QdrantAdapter(
             client=qdrant_client,
             embed_model=embed_model,
             collection_name="documents",
-            model="voyage-finance-2"
+            model=DEFAULT_EMBEDDING_MODEL
         )
 
-        return adapter
+        # Store in session state
+        st.session_state.clients = {
+            'qdrant_adapter': qdrant_adapter,
+            'embed_model': embed_model,
+            'qdrant_client': qdrant_client
+        }
+
+        return True
 
     except Exception as e:
         st.error(f"Failed to initialize clients: {str(e)}")
-        raise
+        return False
 
 def validate_clients():
     """Validate that all required clients are initialized."""
@@ -633,8 +640,8 @@ async def process_url(url: str) -> Optional[Dict[str, Any]]:
         if not full_text:
             raise ValueError("No text content found in document")
         
-        # Extract metadata using QdrantAdapter
-        metadata = st.session_state.clients['qdrant'].extract_metadata(full_text, url)
+        # Extract metadata using QdrantAdapter - Updated to use correct client
+        metadata = st.session_state.clients['qdrant_adapter'].extract_metadata(full_text, url)
         chunks = create_semantic_chunks(full_text)
         
         return {
@@ -871,8 +878,8 @@ with tab2:
                     perform_search_with_timeout(
                         query,
                         st.session_state.clients['embed_model'],
-                        st.session_state.clients['qdrant'],
-                        timeout=10  # 10 seconds timeout
+                        st.session_state.clients['qdrant_adapter'],  # Updated to use adapter
+                        timeout=10
                     )
                 )
                 
