@@ -510,7 +510,7 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
         logger.info(f"Starting to parse document: {url}")
         parser = LlamaParse(
             api_key=st.secrets["LLAMAPARSE_API_KEY"],
-            result_type="text",  # or "markdown"
+            result_type="text",
             verbose=True,
             num_workers=8,
             language="en"
@@ -525,12 +525,15 @@ async def parse_document(url: str, timeout: int = 60) -> Optional[str]:
             temp_path = temp_file.name
             
             try:
-                # Use aload_data for async operation
+                # Use load_data instead of load
                 result = await parser.aload_data(temp_path)
+                
+                # Handle different return types
                 if isinstance(result, list):
                     # If multiple documents returned, join their text
                     return "\n\n".join(doc.text for doc in result)
                 return result.text
+                
             finally:
                 # Clean up temp file
                 try:
