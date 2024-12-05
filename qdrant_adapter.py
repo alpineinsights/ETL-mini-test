@@ -174,13 +174,8 @@ class QdrantAdapter:
         """Process a document with detailed logging and proper error handling."""
         try:
             logger.info(f"Starting document processing for {url}")
-            
-            # Extract metadata
             metadata = self.extract_metadata(doc_text, url)
             logger.info(f"Metadata extracted successfully for {url}")
-            
-            # Split into chunks
-            logger.info(f"Splitting text into chunks with size {chunk_size}")
             chunks = self._split_text(
                 text=doc_text,
                 metadata=metadata,
@@ -188,17 +183,10 @@ class QdrantAdapter:
                 chunk_overlap=chunk_overlap
             )
             logger.info(f"Document split into {len(chunks)} chunks")
-            
-            # Process each chunk
             for chunk in chunks:
                 try:
-                    # Generate dense embedding - Updated to use correct method
                     dense_vector = await self.embed_model.aget_query_embedding(chunk['text'])
-                    
-                    # Generate sparse embedding
                     sparse_vector = self._generate_sparse_vector(chunk['text'])
-                    
-                    # Upsert to Qdrant
                     await self.upsert_chunk(
                         chunk_text=chunk['text'],
                         dense_embedding=dense_vector,
@@ -206,13 +194,10 @@ class QdrantAdapter:
                         metadata=metadata,
                         chunk_id=chunk['chunk_id']
                     )
-                    
                 except Exception as e:
                     logger.error(f"Error processing chunk: {str(e)}")
                     continue
-                    
             return True
-            
         except Exception as e:
             logger.error(f"Error processing document {url}: {str(e)}")
             raise
@@ -409,33 +394,26 @@ class QdrantAdapter:
         stop=stop_after_attempt(5),
         retry=retry_if_exception(is_overloaded_error)
     )
-    def extract_metadata(self, doc_text: str, url: str) -> Dict[str, str]:
+    def extract_metadata(self, doc_text: str, url: str) -> Dict[str, Any]:
         """Extract metadata using LLM first, fallback to filename parsing."""
         try:
-            # Try LLM-based extraction first
-            try:
-                prompt = self.DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
-                response = self.llm_client.messages.create(
-                    model=self.llm_model,
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                metadata = json.loads(response.content)
-                metadata.update({
-                    'url': url,
-                    'file_name': url.split('/')[-1],
-                    'creation_date': datetime.now().isoformat()
-                })
-                return metadata
-            except Exception as e:
-                logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}")
-                
-            # Fallback to filename-based extraction
-            return self._extract_metadata_from_filename(url)
-            
+            # Use LLM-based extraction first
+            prompt = self.DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_text[:2000])
+            response = self.anthropic_client.messages.create(
+                model=self.llm_model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            metadata = json.loads(response.content)
+            metadata.update({
+                'url': url,
+                'file_name': url.split('/')[-1],
+                'creation_date': datetime.now().isoformat()
+            })
+            return metadata
         except Exception as e:
-            logger.error(f"Error extracting metadata: {str(e)}")
-            raise
+            logger.warning(f"Failed to extract metadata using Anthropic: {str(e)}")
+            return self._extract_metadata_from_filename(url)
 
     def recover_collection(self) -> bool:
         """Attempt to recover collection if in a bad state."""
@@ -567,3 +545,11 @@ class QdrantAdapter:
         except Exception as e:
             logger.error(f"Error generating embedding asynchronously: {str(e)}")
             raise
+
+    def _generate_sparse_vector(self, text: str) -> List[float]:
+        """Generate sparse vector using TF-IDF."""
+        sparse_matrix = self.vectorizer.transform([text])
+        dense_array = sparse_matrix.toarray().flatten()
+        if len(dense_array) < self.sparse_dim:
+            dense_array = np.pad(dense_array, (0, self.sparse_dim - len(dense_array)))
+        return dense_array.tolist()
