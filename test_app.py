@@ -315,8 +315,11 @@ async def generate_document_context(text: str) -> Any:
 async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
     """Generate context for a chunk using the cached document context."""
     try:
+        # Use the default context prompt
+        context_prompt = st.session_state.get('context_prompt', DEFAULT_CONTEXT_PROMPT)
+        
         # Combine the prompts
-        system_prompt = f"{anthropic.AI_PROMPT} {st.session_state.context_prompt}"
+        system_prompt = f"{anthropic.AI_PROMPT} {context_prompt}"
         user_prompt = f"\n\n{anthropic.HUMAN_PROMPT} Document context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
         full_prompt = f"{system_prompt}{user_prompt}{anthropic.AI_PROMPT}"
 
