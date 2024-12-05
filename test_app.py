@@ -318,21 +318,19 @@ async def generate_chunk_context(chunk_text: str, doc_context: str) -> str:
         # Use the default context prompt
         context_prompt = st.session_state.get('context_prompt', DEFAULT_CONTEXT_PROMPT)
         
-        # Combine the prompts
-        system_prompt = f"{anthropic.AI_PROMPT} {context_prompt}"
-        user_prompt = f"\n\n{anthropic.HUMAN_PROMPT} Document context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
-        full_prompt = f"{system_prompt}{user_prompt}{anthropic.AI_PROMPT}"
-
-        # Call the completions.create method with the cache parameter
-        response = await st.session_state.clients['anthropic'].acompletions.create(
-            model=st.session_state.llm_model,
-            max_tokens_to_sample=300,
-            prompt=full_prompt,
-            cache="ephemeral"
+        # Format messages for Claude 3
+        response = await st.session_state.clients['anthropic'].messages.create(
+            model=DEFAULT_LLM_MODEL,
+            max_tokens=300,
+            messages=[{
+                "role": "user",
+                "content": f"Document context:\n{doc_context}\n\nChunk text:\n{chunk_text}"
+            }],
+            system=context_prompt
         )
 
         # Extract the assistant's reply
-        result = response['completion'].strip()
+        result = response.content[0].text.strip()
 
         st.session_state.processing_metrics['stages']['context']['success'] += 1
         return result
@@ -461,15 +459,16 @@ async def process_chunks_async(chunks: List[Dict[str, Any]], metadata: Dict[str,
         
         # Generate document-level context first
         try:
-            doc_context = await rate_limited_context(
-                st.session_state.clients['anthropic'].messages.create,
+            doc_context_response = await st.session_state.clients['anthropic'].messages.create(
                 model=DEFAULT_LLM_MODEL,
                 max_tokens=300,
                 messages=[{
                     "role": "user",
                     "content": f"Document text:\n{full_document[:2000]}"
-                }]
+                }],
+                system="Analyze this document to understand its overall context."
             )
+            doc_context = doc_context_response.content[0].text
             logger.info("Generated document-level context")
         except Exception as e:
             logger.error(f"Error generating document context: {str(e)}")
